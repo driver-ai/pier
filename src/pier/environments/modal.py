@@ -186,8 +186,12 @@ class _ModalDirect(_ModalStrategy):
         await env._ensure_egress_proxy()
         env._sandbox = await env._create_sandbox()
 
-        await env._sandbox.mkdir.aio(str(EnvironmentPaths.agent_dir), parents=True)
-        await env._sandbox.mkdir.aio(str(EnvironmentPaths.verifier_dir), parents=True)
+        await env._sandbox.filesystem.make_directory.aio(
+            str(EnvironmentPaths.agent_dir), parents=True
+        )
+        await env._sandbox.filesystem.make_directory.aio(
+            str(EnvironmentPaths.verifier_dir), parents=True
+        )
 
         # Make log directories world-writable so non-root agent/verifier
         # users can write to them.
