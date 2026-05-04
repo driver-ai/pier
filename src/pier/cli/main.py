@@ -3,6 +3,7 @@ from importlib.metadata import version
 import typer
 from typer import Typer
 
+from pier.cli.analyze import analyze_command, check_command
 from pier.cli.jobs import jobs_app, start
 
 
@@ -25,6 +26,8 @@ def main(
 
 
 app.add_typer(jobs_app, name="job", help="Manage jobs.")
+app.command(name="check", help="Check task quality against a rubric.")(check_command)
+app.command(name="analyze", help="Analyze trial trajectories.")(analyze_command)
 app.command(name="run", help="Start a job.")(start)
 
 
