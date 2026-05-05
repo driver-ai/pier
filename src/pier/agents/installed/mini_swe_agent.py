@@ -55,12 +55,55 @@ def _normalize_content(raw_content: Any) -> str:
     return str(raw_content)
 
 
+def _iso_timestamp(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, int | float):
+        return datetime.fromtimestamp(value, tz=timezone.utc).isoformat()
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00")).isoformat()
+        except ValueError:
+            return None
+    return None
+
+
+def _message_timestamp(
+    message: dict[str, Any], *, prefer_created: bool = False
+) -> str | None:
+    extra = message.get("extra") if isinstance(message.get("extra"), dict) else {}
+    fields = (
+        ("created_at", "timestamp", "completed_at")
+        if prefer_created
+        else ("completed_at", "timestamp", "created_at")
+    )
+    for field in fields:
+        timestamp = _iso_timestamp(message.get(field))
+        if timestamp:
+            return timestamp
+    return _iso_timestamp(extra.get("timestamp"))
+
+
+def _first_message_timestamp(messages: list[dict[str, Any]]) -> str | None:
+    for message in messages:
+        timestamp = _message_timestamp(message, prefer_created=True)
+        if timestamp:
+            return timestamp
+    return None
+
+
 def _add_observation_to_last_agent_step(
-    steps: list[Step], content: str, _logger: Any, message_index: int
+    steps: list[Step],
+    content: str,
+    _logger: Any,
+    message_index: int,
+    timestamp: str | None = None,
 ) -> None:
     """Add observation content to the most recent agent step."""
     if steps and steps[-1].source == "agent":
         prev_step = steps[-1]
+        if timestamp:
+            prev_step.timestamp = timestamp
         if prev_step.observation and prev_step.observation.results:
             prev_step.observation.results.append(ObservationResult(content=content))
         else:
@@ -239,6 +282,7 @@ def convert_mini_swe_agent_to_atif(
     trajectory_format = mini_swe_agent_trajectory.get("trajectory_format", "unknown")
 
     messages = mini_swe_agent_trajectory.get("messages") or []
+    session_start_timestamp = _first_message_timestamp(messages)
 
     steps: list[Step] = []
     step_id = 1
@@ -262,6 +306,7 @@ def convert_mini_swe_agent_to_atif(
     for i, message in enumerate(messages):
         role = message.get("role")
         content = _normalize_content(message.get("content"))
+        timestamp = _message_timestamp(message) or session_start_timestamp
 
         # Extract token usage
         usage = _usage_from_message(message)
@@ -300,7 +345,7 @@ def convert_mini_swe_agent_to_atif(
             steps.append(
                 Step(
                     step_id=step_id,
-                    timestamp=datetime.now(timezone.utc).isoformat(),
+                    timestamp=timestamp,
                     source="system",
                     message=content,
                 )
@@ -312,17 +357,19 @@ def convert_mini_swe_agent_to_atif(
                 steps.append(
                     Step(
                         step_id=step_id,
-                        timestamp=datetime.now(timezone.utc).isoformat(),
+                        timestamp=timestamp,
                         source="user",
                         message=content,
                     )
                 )
                 step_id += 1
             else:
-                _add_observation_to_last_agent_step(steps, content, _logger, i)
+                _add_observation_to_last_agent_step(
+                    steps, content, _logger, i, timestamp
+                )
 
         elif role == "tool":
-            _add_observation_to_last_agent_step(steps, content, _logger, i)
+            _add_observation_to_last_agent_step(steps, content, _logger, i, timestamp)
 
         elif role == "assistant":
             tool_calls = _parse_tool_calls(message, step_id)
@@ -341,7 +388,7 @@ def convert_mini_swe_agent_to_atif(
             steps.append(
                 Step(
                     step_id=step_id,
-                    timestamp=datetime.now(timezone.utc).isoformat(),
+                    timestamp=timestamp,
                     source="agent",
                     model_name=model_name,
                     message=content,
@@ -373,7 +420,7 @@ def convert_mini_swe_agent_to_atif(
             steps.append(
                 Step(
                     step_id=step_id,
-                    timestamp=datetime.now(timezone.utc).isoformat(),
+                    timestamp=timestamp,
                     source="agent",
                     model_name=model_name,
                     message=response_content,
@@ -389,7 +436,7 @@ def convert_mini_swe_agent_to_atif(
             output = message.get("output")
             if not isinstance(output, str):
                 output = _normalize_content(output)
-            _add_observation_to_last_agent_step(steps, output, _logger, i)
+            _add_observation_to_last_agent_step(steps, output, _logger, i, timestamp)
 
     # Build final metrics
     final_extra: dict[str, Any] = {}

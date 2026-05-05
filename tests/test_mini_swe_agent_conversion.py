@@ -105,6 +105,8 @@ def test_convert_openai_responses_usage_to_atif_metrics():
                 {
                     "object": "response",
                     "model": "gpt-5.5-2026-04-23",
+                    "created_at": 1_000,
+                    "completed_at": 1_012,
                     "usage": {
                         "input_tokens": 100,
                         "input_tokens_details": {"cached_tokens": 25},
@@ -133,7 +135,11 @@ def test_convert_openai_responses_usage_to_atif_metrics():
                     "type": "function_call_output",
                     "call_id": "call_1",
                     "output": "/app\n",
-                    "extra": {"returncode": 0, "exception_info": ""},
+                    "extra": {
+                        "returncode": 0,
+                        "exception_info": "",
+                        "timestamp": 1_015,
+                    },
                 },
             ],
         },
@@ -153,6 +159,9 @@ def test_convert_openai_responses_usage_to_atif_metrics():
 
     agent_steps = [step for step in trajectory.steps if step.source == "agent"]
     assert len(agent_steps) == 1
+    assert trajectory.steps[0].timestamp == "1970-01-01T00:16:40+00:00"
+    assert trajectory.steps[1].timestamp == "1970-01-01T00:16:40+00:00"
+    assert agent_steps[0].timestamp == "1970-01-01T00:16:55+00:00"
     assert agent_steps[0].metrics is not None
     assert agent_steps[0].metrics.prompt_tokens == 100
     assert agent_steps[0].metrics.completion_tokens == 40
