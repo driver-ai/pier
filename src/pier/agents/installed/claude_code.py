@@ -1189,7 +1189,10 @@ class ClaudeCode(BaseInstalledAgent):
                     if server.transport == "streamable-http"
                     else server.transport
                 )
-                servers[server.name] = {"type": transport, "url": server.url}
+                entry: dict[str, Any] = {"type": transport, "url": server.url}
+                if server.headers:
+                    entry["headers"] = dict(server.headers)
+                servers[server.name] = entry
         claude_json = json.dumps({"mcpServers": servers}, indent=2)
         escaped = shlex.quote(claude_json)
         return f"echo {escaped} > $CLAUDE_CONFIG_DIR/.claude.json"

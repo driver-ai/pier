@@ -15,7 +15,7 @@ from shortuuid import ShortUUID
 
 from pier.models.agent.name import AgentName
 from pier.models.environment_type import EnvironmentType
-from pier.models.task.config import ArtifactConfig
+from pier.models.task.config import ArtifactConfig, MCPServerConfig
 from pier.models.task.id import GitTaskId, LocalTaskId, PackageTaskId
 from pier.utils.env import templatize_sensitive_env
 
@@ -59,6 +59,7 @@ class AgentConfig(BaseModel):
     max_timeout_sec: float | None = None
     kwargs: dict[str, Any] = Field(default_factory=dict)
     env: dict[str, str] = Field(default_factory=dict)
+    mcp_servers: list[MCPServerConfig] = Field(default_factory=list)
 
     @field_serializer("env")
     @classmethod

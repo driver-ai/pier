@@ -168,7 +168,9 @@ class TrialExecution:
                 "trial_paths": trial_paths,
                 "agent_timeout_sec": agent_timeout_sec,
             }
-        if task.config.environment.mcp_servers:
+        if agent_config.mcp_servers:
+            extra_kwargs["mcp_servers"] = agent_config.mcp_servers
+        elif task.config.environment.mcp_servers:
             extra_kwargs["mcp_servers"] = task.config.environment.mcp_servers
         if task.config.environment.skills_dir:
             extra_kwargs["skills_dir"] = task.config.environment.skills_dir
