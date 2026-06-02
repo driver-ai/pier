@@ -1,4 +1,5 @@
 import asyncio
+import random
 import shutil
 from collections.abc import Coroutine
 from typing import Any
@@ -37,6 +38,10 @@ class TrialQueue:
         self._hooks = hooks
         self._logger = logger.getChild(__name__)
         self._semaphore = asyncio.Semaphore(n_concurrent)
+        # Per-queue RNG for backoff jitter. Full jitter de-synchronizes retries so a
+        # burst of simultaneous failures (e.g. an API concurrent-connection 429 at high
+        # concurrency) doesn't re-collide on identical deterministic backoffs.
+        self._rng = random.Random()
 
     def add_hook(self, event: TrialEvent, callback: HookCallback) -> "TrialQueue":
         """Register a callback for a trial lifecycle event and return the queue."""
@@ -89,12 +94,20 @@ class TrialQueue:
 
         return True
 
-    def _calculate_backoff_delay(self, attempt: int) -> float:
-        """Calculate the backoff delay for a retry attempt."""
+    def _backoff_base(self, attempt: int) -> float:
+        """Capped exponential backoff (no jitter) for a retry attempt."""
         delay = self._retry_config.min_wait_sec * (
             self._retry_config.wait_multiplier**attempt
         )
         return min(delay, self._retry_config.max_wait_sec)
+
+    def _calculate_backoff_delay(self, attempt: int) -> float:
+        """Backoff delay with FULL jitter: uniform(0, capped-exponential-base).
+
+        Jitter spreads synchronized retries so they don't re-collide on a shared limit
+        (e.g. an API concurrent-connection 429 hit by many trials at once).
+        """
+        return self._rng.uniform(0.0, self._backoff_base(attempt))
 
     def _setup_hooks(self, trial) -> None:
         """Wire queue-level hooks to the trial."""
