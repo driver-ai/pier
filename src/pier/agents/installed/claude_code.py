@@ -38,6 +38,12 @@ from pier.utils.trajectory_metrics import (
 class ClaudeCode(BaseInstalledAgent):
     SUPPORTS_ATIF: bool = True
     memory_dir: str | None
+    seed_session_dir: str | None
+
+    # Claude Code stores sessions under projects/<slug>/<id>.jsonl, where
+    # <slug> is the URL-encoded run cwd. Pier launches the agent in /app, so
+    # the slug is "-app". Keep this layout knowledge in one place.
+    SESSION_PROJECT_SLUG: str = "-app"
 
     CLI_FLAGS = [
         CliFlag(
@@ -97,6 +103,11 @@ class ClaudeCode(BaseInstalledAgent):
             type="str",
             default="EnterPlanMode",
         ),
+        CliFlag(
+            "resume_session_id",
+            cli="--resume",
+            type="str",
+        ),
     ]
     ENV_VARS = [
         EnvVar(
@@ -115,10 +126,12 @@ class ClaudeCode(BaseInstalledAgent):
         self,
         logs_dir: Path,
         memory_dir: str | None = None,
+        seed_session_dir: str | None = None,
         *args,
         **kwargs,
     ):
         self.memory_dir = memory_dir
+        self.seed_session_dir = seed_session_dir
         super().__init__(logs_dir, *args, **kwargs)
 
     def get_version_command(self) -> str | None:
@@ -1166,6 +1179,34 @@ class ClaudeCode(BaseInstalledAgent):
             "$CLAUDE_CONFIG_DIR/projects/-app/memory/ 2>/dev/null || true)"
         )
 
+    def _build_register_session_seed_command(self) -> str | None:
+        """Return a shell command that seeds a prior Claude session for --resume.
+
+        Copies the staged session JSONL from ``self.seed_session_dir`` into
+        ``$CLAUDE_CONFIG_DIR/projects/<slug>/<id>.jsonl`` so that ``--resume
+        <id>`` finds the conversation at launch. The seed arrives as
+        already-staged container content (like ``self.memory_dir``); we never
+        fetch it host-side here.
+
+        Returns ``None`` unless both a seed dir and a resume id are present.
+        Copies only the matching ``<id>.jsonl`` into the existing ``-app``
+        project dir so we do not create a second project dir that would break
+        ``_get_session_dir`` harvesting.
+        """
+        session_id = self._resolved_flags.get("resume_session_id")
+        if not self.seed_session_dir or not session_id:
+            return None
+        target = (
+            f"$CLAUDE_CONFIG_DIR/projects/{self.SESSION_PROJECT_SLUG}/"
+            f"{session_id}.jsonl"
+        )
+        source = f"{self.seed_session_dir}/{session_id}.jsonl"
+        return (
+            f"(mkdir -p $CLAUDE_CONFIG_DIR/projects/{self.SESSION_PROJECT_SLUG} && "
+            f"cp {shlex.quote(source)} "
+            f'"{target}" 2>/dev/null || true)'
+        )
+
     def _build_register_mcp_servers_command(self) -> str | None:
         """Return a shell command that writes MCP config to ~/.claude.json.
 
@@ -1322,6 +1363,10 @@ class ClaudeCode(BaseInstalledAgent):
         memory_command = self._build_register_memory_command()
         if memory_command:
             setup_command += f" && {memory_command}"
+
+        session_seed_command = self._build_register_session_seed_command()
+        if session_seed_command:
+            setup_command += f" && {session_seed_command}"
 
         mcp_command = self._build_register_mcp_servers_command()
         if mcp_command:
