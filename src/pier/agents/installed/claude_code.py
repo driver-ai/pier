@@ -2,6 +2,7 @@ import json
 import os
 import re
 import shlex
+import tempfile
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -1267,8 +1268,6 @@ class ClaudeCode(BaseInstalledAgent):
     async def run(
         self, instruction: str, environment: BaseEnvironment, context: AgentContext
     ) -> None:
-        escaped_instruction = shlex.quote(instruction)
-
         use_bedrock = self._is_bedrock_mode()
 
         env = {
@@ -1398,6 +1397,23 @@ class ClaudeCode(BaseInstalledAgent):
             command=setup_command,
             env=env,
         )
+
+        # Pass the instruction via a file read on stdin rather than as an argv
+        # string. Large prompts (e.g. source-window oracle tasks that inline a
+        # big context bundle) overflow the kernel's per-arg limit
+        # (MAX_ARG_STRLEN, ~128KB) and fail with "exec: argument list too long"
+        # before claude even starts.
+        prompt_path = "/tmp/claude-instruction.txt"
+        with tempfile.NamedTemporaryFile(
+            "w", suffix=".txt", delete=False, encoding="utf-8"
+        ) as prompt_file:
+            prompt_file.write(instruction)
+            host_prompt_path = prompt_file.name
+        try:
+            await environment.upload_file(host_prompt_path, prompt_path)
+        finally:
+            os.unlink(host_prompt_path)
+
         await self.exec_as_agent(
             environment,
             command=(
@@ -1405,7 +1421,7 @@ class ClaudeCode(BaseInstalledAgent):
                 f"claude --verbose --output-format=stream-json "
                 f"--permission-mode=bypassPermissions "
                 f"{extra_flags}"
-                f"--print -- {escaped_instruction} 2>&1 </dev/null | tee "
+                f"--print < {shlex.quote(prompt_path)} 2>&1 | tee "
                 f"/logs/agent/claude-code.txt"
             ),
             env=env,
