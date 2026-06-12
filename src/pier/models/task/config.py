@@ -208,6 +208,13 @@ class EnvironmentConfig(BaseModel):
         description="Default working directory for command execution. "
         "Overrides the container's WORKDIR when set.",
     )
+    input_artifacts: list["ArtifactConfig"] = Field(
+        default_factory=list,
+        description="Host->container input artifacts staged into the single-task "
+        "container before the agent launches. Each entry's 'source' is a HOST "
+        "path and 'destination' is the CONTAINER path to upload it to. Symmetric "
+        "to the OUTPUT 'artifacts' field, which is downloaded post-run.",
+    )
 
     # Deprecated fields - marked as excluded so they don't appear in serialization by default
     memory: str | None = Field(

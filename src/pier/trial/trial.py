@@ -955,6 +955,44 @@ class Trial:
             convention_source_is_mount=False,
         )
 
+    async def _upload_input_artifacts(self) -> None:
+        """Stage host->container input artifacts before the agent launches.
+
+        Mirror image of the OUTPUT artifact collection in
+        ``_collect_artifacts_into``: it iterates config-driven artifacts and
+        downloads each from the container; this iterates
+        ``environment.input_artifacts`` and uploads each into the container.
+        Each entry's ``source`` is a HOST path; ``destination`` is the CONTAINER
+        path (defaulting to ``Path(source).name`` like the output side). The
+        destination parent dir is created first since ``upload_file`` does not.
+
+        Single-task only — multi-step input staging is the existing
+        ``workdir/`` upload (``_upload_step_workdir``). Best-effort: failures
+        are logged so a missing optional seed does not abort the trial.
+        """
+        input_artifacts = self._task.config.environment.input_artifacts
+        for artifact in input_artifacts:
+            # Normalize: str -> ArtifactConfig(source=str)
+            if isinstance(artifact, str):
+                artifact = ArtifactConfig(source=artifact)
+
+            source = artifact.source
+            destination = artifact.destination or Path(source).name
+            try:
+                parent = Path(destination).parent.as_posix()
+                if parent and parent not in (".", "/"):
+                    await self._environment.exec(
+                        f"mkdir -p {shlex.quote(parent)}", user="root"
+                    )
+                await self._environment.upload_file(
+                    source_path=source, target_path=destination
+                )
+            except Exception:
+                self._logger.warning(
+                    f"Failed to stage input artifact '{source}' -> "
+                    f"'{destination}' (best-effort)"
+                )
+
     async def run(self) -> TrialResult:
         self._trial_paths.trial_dir.mkdir(parents=True, exist_ok=True)
         self._trial_paths.config_path.write_text(self.config.model_dump_json(indent=4))
@@ -983,6 +1021,7 @@ class Trial:
                 if self._task.has_steps:
                     await self._run_steps()
                 else:
+                    await self._upload_input_artifacts()
                     try:
                         await self._execute_agent()
 

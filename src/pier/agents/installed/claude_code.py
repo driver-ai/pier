@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import shlex
 from pathlib import Path
 from typing import Any
@@ -41,9 +42,9 @@ class ClaudeCode(BaseInstalledAgent):
     seed_session_dir: str | None
 
     # Claude Code stores sessions under projects/<slug>/<id>.jsonl, where
-    # <slug> is the URL-encoded run cwd. Pier launches the agent in /app, so
-    # the slug is "-app". Keep this layout knowledge in one place.
-    SESSION_PROJECT_SLUG: str = "-app"
+    # <slug> is the URL-encoded run cwd. When Pier does not pin a workdir the
+    # container default cwd is /app, whose slug is "-app".
+    DEFAULT_SESSION_PROJECT_SLUG: str = "-app"
 
     CLI_FLAGS = [
         CliFlag(
@@ -1179,30 +1180,46 @@ class ClaudeCode(BaseInstalledAgent):
             "$CLAUDE_CONFIG_DIR/projects/-app/memory/ 2>/dev/null || true)"
         )
 
-    def _build_register_session_seed_command(self) -> str | None:
+    @classmethod
+    def _slug_for_cwd(cls, cwd: str | None) -> str:
+        """Return Claude Code's projects/<slug> name for a given run cwd.
+
+        Claude Code stores sessions under ``projects/<slug>/<id>.jsonl`` where
+        ``<slug>`` is the URL-encoded cwd: every run of non-alphanumeric
+        characters collapses to a single ``-`` (e.g. ``/app`` -> ``-app``,
+        ``/work`` -> ``-work``, ``/home/user/app`` -> ``-home-user-app``).
+        Keep this encoding in one place. A missing cwd falls back to the
+        container default of ``/app``.
+        """
+        if not cwd:
+            return cls.DEFAULT_SESSION_PROJECT_SLUG
+        return re.sub(r"[^a-zA-Z0-9]+", "-", cwd)
+
+    def _build_register_session_seed_command(self, cwd: str | None = None) -> str | None:
         """Return a shell command that seeds a prior Claude session for --resume.
 
         Copies the staged session JSONL from ``self.seed_session_dir`` into
         ``$CLAUDE_CONFIG_DIR/projects/<slug>/<id>.jsonl`` so that ``--resume
-        <id>`` finds the conversation at launch. The seed arrives as
-        already-staged container content (like ``self.memory_dir``); we never
-        fetch it host-side here.
+        <id>`` finds the conversation at launch. ``<slug>`` is derived from the
+        run's actual ``cwd`` (the same value Pier sets as the container cwd) so
+        non-``/app`` windows (e.g. the ``driver`` condition's ``/work``) resume
+        correctly. The seed arrives as already-staged container content (the
+        input-artifact uploaded it to ``self.seed_session_dir`` host-side);
+        we never fetch it host-side here.
 
         Returns ``None`` unless both a seed dir and a resume id are present.
-        Copies only the matching ``<id>.jsonl`` into the existing ``-app``
-        project dir so we do not create a second project dir that would break
+        Copies only the matching ``<id>.jsonl`` into the existing project dir
+        so we do not create a second project dir that would break
         ``_get_session_dir`` harvesting.
         """
         session_id = self._resolved_flags.get("resume_session_id")
         if not self.seed_session_dir or not session_id:
             return None
-        target = (
-            f"$CLAUDE_CONFIG_DIR/projects/{self.SESSION_PROJECT_SLUG}/"
-            f"{session_id}.jsonl"
-        )
+        slug = self._slug_for_cwd(cwd)
+        target = f"$CLAUDE_CONFIG_DIR/projects/{slug}/{session_id}.jsonl"
         source = f"{self.seed_session_dir}/{session_id}.jsonl"
         return (
-            f"(mkdir -p $CLAUDE_CONFIG_DIR/projects/{self.SESSION_PROJECT_SLUG} && "
+            f"(mkdir -p $CLAUDE_CONFIG_DIR/projects/{slug} && "
             f"cp {shlex.quote(source)} "
             f'"{target}" 2>/dev/null || true)'
         )
@@ -1364,7 +1381,8 @@ class ClaudeCode(BaseInstalledAgent):
         if memory_command:
             setup_command += f" && {memory_command}"
 
-        session_seed_command = self._build_register_session_seed_command()
+        run_cwd = environment.task_env_config.workdir
+        session_seed_command = self._build_register_session_seed_command(cwd=run_cwd)
         if session_seed_command:
             setup_command += f" && {session_seed_command}"
 
