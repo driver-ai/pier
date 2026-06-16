@@ -1,6 +1,8 @@
 import json
 import os
+import re
 import shlex
+import tempfile
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -38,6 +40,12 @@ from pier.utils.trajectory_metrics import (
 class ClaudeCode(BaseInstalledAgent):
     SUPPORTS_ATIF: bool = True
     memory_dir: str | None
+    seed_session_dir: str | None
+
+    # Claude Code stores sessions under projects/<slug>/<id>.jsonl, where
+    # <slug> is the URL-encoded run cwd. When Pier does not pin a workdir the
+    # container default cwd is /app, whose slug is "-app".
+    DEFAULT_SESSION_PROJECT_SLUG: str = "-app"
 
     CLI_FLAGS = [
         CliFlag(
@@ -97,6 +105,11 @@ class ClaudeCode(BaseInstalledAgent):
             type="str",
             default="EnterPlanMode",
         ),
+        CliFlag(
+            "resume_session_id",
+            cli="--resume",
+            type="str",
+        ),
     ]
     ENV_VARS = [
         EnvVar(
@@ -115,10 +128,12 @@ class ClaudeCode(BaseInstalledAgent):
         self,
         logs_dir: Path,
         memory_dir: str | None = None,
+        seed_session_dir: str | None = None,
         *args,
         **kwargs,
     ):
         self.memory_dir = memory_dir
+        self.seed_session_dir = seed_session_dir
         super().__init__(logs_dir, *args, **kwargs)
 
     def get_version_command(self) -> str | None:
@@ -1166,6 +1181,50 @@ class ClaudeCode(BaseInstalledAgent):
             "$CLAUDE_CONFIG_DIR/projects/-app/memory/ 2>/dev/null || true)"
         )
 
+    @classmethod
+    def _slug_for_cwd(cls, cwd: str | None) -> str:
+        """Return Claude Code's projects/<slug> name for a given run cwd.
+
+        Claude Code stores sessions under ``projects/<slug>/<id>.jsonl`` where
+        ``<slug>`` is the URL-encoded cwd: every run of non-alphanumeric
+        characters collapses to a single ``-`` (e.g. ``/app`` -> ``-app``,
+        ``/work`` -> ``-work``, ``/home/user/app`` -> ``-home-user-app``).
+        Keep this encoding in one place. A missing cwd falls back to the
+        container default of ``/app``.
+        """
+        if not cwd:
+            return cls.DEFAULT_SESSION_PROJECT_SLUG
+        return re.sub(r"[^a-zA-Z0-9]+", "-", cwd)
+
+    def _build_register_session_seed_command(self, cwd: str | None = None) -> str | None:
+        """Return a shell command that seeds a prior Claude session for --resume.
+
+        Copies the staged session JSONL from ``self.seed_session_dir`` into
+        ``$CLAUDE_CONFIG_DIR/projects/<slug>/<id>.jsonl`` so that ``--resume
+        <id>`` finds the conversation at launch. ``<slug>`` is derived from the
+        run's actual ``cwd`` (the same value Pier sets as the container cwd) so
+        non-``/app`` windows (e.g. the ``driver`` condition's ``/work``) resume
+        correctly. The seed arrives as already-staged container content (the
+        input-artifact uploaded it to ``self.seed_session_dir`` host-side);
+        we never fetch it host-side here.
+
+        Returns ``None`` unless both a seed dir and a resume id are present.
+        Copies only the matching ``<id>.jsonl`` into the existing project dir
+        so we do not create a second project dir that would break
+        ``_get_session_dir`` harvesting.
+        """
+        session_id = self._resolved_flags.get("resume_session_id")
+        if not self.seed_session_dir or not session_id:
+            return None
+        slug = self._slug_for_cwd(cwd)
+        target = f"$CLAUDE_CONFIG_DIR/projects/{slug}/{session_id}.jsonl"
+        source = f"{self.seed_session_dir}/{session_id}.jsonl"
+        return (
+            f"(mkdir -p $CLAUDE_CONFIG_DIR/projects/{slug} && "
+            f"cp {shlex.quote(source)} "
+            f'"{target}" 2>/dev/null || true)'
+        )
+
     def _build_register_mcp_servers_command(self) -> str | None:
         """Return a shell command that writes MCP config to ~/.claude.json.
 
@@ -1189,7 +1248,10 @@ class ClaudeCode(BaseInstalledAgent):
                     if server.transport == "streamable-http"
                     else server.transport
                 )
-                servers[server.name] = {"type": transport, "url": server.url}
+                entry: dict[str, Any] = {"type": transport, "url": server.url}
+                if server.headers:
+                    entry["headers"] = dict(server.headers)
+                servers[server.name] = entry
         claude_json = json.dumps({"mcpServers": servers}, indent=2)
         escaped = shlex.quote(claude_json)
         return f"echo {escaped} > $CLAUDE_CONFIG_DIR/.claude.json"
@@ -1206,8 +1268,6 @@ class ClaudeCode(BaseInstalledAgent):
     async def run(
         self, instruction: str, environment: BaseEnvironment, context: AgentContext
     ) -> None:
-        escaped_instruction = shlex.quote(instruction)
-
         use_bedrock = self._is_bedrock_mode()
 
         env = {
@@ -1320,6 +1380,11 @@ class ClaudeCode(BaseInstalledAgent):
         if memory_command:
             setup_command += f" && {memory_command}"
 
+        run_cwd = environment.task_env_config.workdir
+        session_seed_command = self._build_register_session_seed_command(cwd=run_cwd)
+        if session_seed_command:
+            setup_command += f" && {session_seed_command}"
+
         mcp_command = self._build_register_mcp_servers_command()
         if mcp_command:
             setup_command += f" && {mcp_command}"
@@ -1332,6 +1397,23 @@ class ClaudeCode(BaseInstalledAgent):
             command=setup_command,
             env=env,
         )
+
+        # Pass the instruction via a file read on stdin rather than as an argv
+        # string. Large prompts (e.g. source-window oracle tasks that inline a
+        # big context bundle) overflow the kernel's per-arg limit
+        # (MAX_ARG_STRLEN, ~128KB) and fail with "exec: argument list too long"
+        # before claude even starts.
+        prompt_path = "/tmp/claude-instruction.txt"
+        with tempfile.NamedTemporaryFile(
+            "w", suffix=".txt", delete=False, encoding="utf-8"
+        ) as prompt_file:
+            prompt_file.write(instruction)
+            host_prompt_path = prompt_file.name
+        try:
+            await environment.upload_file(host_prompt_path, prompt_path)
+        finally:
+            os.unlink(host_prompt_path)
+
         await self.exec_as_agent(
             environment,
             command=(
@@ -1339,7 +1421,7 @@ class ClaudeCode(BaseInstalledAgent):
                 f"claude --verbose --output-format=stream-json "
                 f"--permission-mode=bypassPermissions "
                 f"{extra_flags}"
-                f"--print -- {escaped_instruction} 2>&1 </dev/null | tee "
+                f"--print < {shlex.quote(prompt_path)} 2>&1 | tee "
                 f"/logs/agent/claude-code.txt"
             ),
             env=env,
