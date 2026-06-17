@@ -40,6 +40,7 @@ from pier.utils.trajectory_metrics import (
 class ClaudeCode(BaseInstalledAgent):
     SUPPORTS_ATIF: bool = True
     memory_dir: str | None
+    agents: dict[str, str] | None
     seed_session_dir: str | None
 
     # Claude Code stores sessions under projects/<slug>/<id>.jsonl, where
@@ -128,11 +129,13 @@ class ClaudeCode(BaseInstalledAgent):
         self,
         logs_dir: Path,
         memory_dir: str | None = None,
+        agents: dict[str, str] | None = None,
         seed_session_dir: str | None = None,
         *args,
         **kwargs,
     ):
         self.memory_dir = memory_dir
+        self.agents = agents
         self.seed_session_dir = seed_session_dir
         super().__init__(logs_dir, *args, **kwargs)
 
@@ -1256,6 +1259,25 @@ class ClaudeCode(BaseInstalledAgent):
         escaped = shlex.quote(claude_json)
         return f"echo {escaped} > $CLAUDE_CONFIG_DIR/.claude.json"
 
+    def _build_register_agents_command(self) -> str | None:
+        """Return a shell command that writes sub-agent definitions to Claude's config.
+
+        For each entry in ``self.agents`` (mapping sub-agent name -> full
+        markdown content, including YAML frontmatter), writes the content to
+        ``$CLAUDE_CONFIG_DIR/agents/<name>.md`` so that Claude Code picks it up
+        as a usable sub-agent. Returns ``None`` when no agents are configured.
+        """
+        if not self.agents:
+            return None
+        commands = ["mkdir -p $CLAUDE_CONFIG_DIR/agents"]
+        for name, content in self.agents.items():
+            escaped_content = shlex.quote(content)
+            escaped_name = shlex.quote(f"{name}.md")
+            commands.append(
+                f"echo {escaped_content} > $CLAUDE_CONFIG_DIR/agents/{escaped_name}"
+            )
+        return " && ".join(commands)
+
     def _is_bedrock_mode(self) -> bool:
         """Check if Bedrock mode is enabled via environment variables."""
         if (self._get_env("CLAUDE_CODE_USE_BEDROCK") or "").strip() == "1":
@@ -1388,6 +1410,10 @@ class ClaudeCode(BaseInstalledAgent):
         mcp_command = self._build_register_mcp_servers_command()
         if mcp_command:
             setup_command += f" && {mcp_command}"
+
+        agents_command = self._build_register_agents_command()
+        if agents_command:
+            setup_command += f" && {agents_command}"
 
         cli_flags = self.build_cli_flags()
         extra_flags = (cli_flags + " ") if cli_flags else ""
