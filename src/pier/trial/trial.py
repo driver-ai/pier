@@ -497,40 +497,67 @@ class Trial:
     async def _finalize_capture(self) -> None:
         """Capture the agent's staged diff as ``agent/model.patch`` (DEC-019).
 
-        Best-effort, env-gated instrumentation. Runs in the container repo
-        working dir so untracked new files are included (``git add -A`` then
-        ``git diff --cached HEAD``). The patch text is written to the host
+        Best-effort, env-gated instrumentation for the single-agent run paths
+        (success + handled-failure + outer error/cancel). Multi-step tasks
+        (``_run_steps``) are out of v1 capture scope.
+
+        Runs ``git add -A`` then ``git diff --cached HEAD`` in the container repo
+        working dir so untracked new files are included, then ``git reset -q`` to
+        restore the agent's index so the verifier is not perturbed by the
+        capture's staging. The patch text is written to the host
         ``trial_paths.agent_dir`` so it rides the existing log path:
 
         - Mounted backends: the host agent dir IS the bind-mounted
           ``/logs/agent``, so the file is immediately visible in-container.
         - Non-mounted backends: ``_maybe_download_logs`` merges container files
           into this same host dir without removing host-written files, so the
-          patch survives. The shared finalizer runs BEFORE the first
-          ``_maybe_download_logs()`` in every run path (C1).
+          patch survives. The finalizer runs BEFORE the first
+          ``_maybe_download_logs()`` on every path that invokes it (C1).
 
-        Never raises out of the run: capture failures are logged warnings.
+        If ``pwd`` or a git command returns non-zero, ``model.patch`` is NOT
+        written — a missing artifact is honest, whereas an empty one would read
+        downstream as 'no edits' rather than 'capture broke'. A genuinely empty
+        diff (exit 0, no output) still writes an empty patch. Never raises out
+        of the run.
         """
         if not capture_strace_enabled():
             return
 
         try:
             workdir_result = await self._environment.exec("pwd")
-            workdir = (workdir_result.stdout or "/").strip()
+            workdir = (workdir_result.stdout or "").strip()
+            if workdir_result.return_code != 0 or not workdir:
+                self._logger.warning(
+                    "model.patch capture skipped: could not resolve repo workdir "
+                    f"(pwd exit {workdir_result.return_code}): {workdir_result.stderr}"
+                )
+                return
 
-            # Issue git commands in container-repo call order, then replay the
-            # cached stdout through the pure derivation so ordering/spec live in
-            # one place (derive_model_patch) while I/O stays in this shell.
-            results: dict[tuple[str, ...], str] = {}
-            for git_args in (["add", "-A"], ["diff", "--cached", "HEAD"]):
-                command = "git " + " ".join(shlex.quote(a) for a in git_args)
-                exec_result = await self._environment.exec(command, cwd=workdir)
-                results[tuple(git_args)] = exec_result.stdout or ""
+            try:
+                # Issue git commands in container-repo call order, then replay
+                # the cached stdout through the pure derivation so the staged-diff
+                # spec lives in one place (derive_model_patch) while I/O stays
+                # in this shell.
+                results: dict[tuple[str, ...], str] = {}
+                for git_args in (["add", "-A"], ["diff", "--cached", "HEAD"]):
+                    command = "git " + " ".join(shlex.quote(a) for a in git_args)
+                    exec_result = await self._environment.exec(command, cwd=workdir)
+                    if exec_result.return_code != 0:
+                        self._logger.warning(
+                            f"model.patch capture skipped: `{command}` failed "
+                            f"(exit {exec_result.return_code}): {exec_result.stderr}"
+                        )
+                        return
+                    results[tuple(git_args)] = exec_result.stdout or ""
 
-            patch = derive_model_patch(lambda args: results[tuple(args)])
+                patch = derive_model_patch(lambda args: results[tuple(args)])
 
-            model_patch_path = self._trial_paths.agent_dir / "model.patch"
-            model_patch_path.write_text(patch)
+                model_patch_path = self._trial_paths.agent_dir / "model.patch"
+                model_patch_path.write_text(patch)
+            finally:
+                # Restore the agent's index so the verifier is unaffected by the
+                # capture's `git add -A` (runs even when the diff step returned).
+                await self._environment.exec("git reset -q", cwd=workdir)
         except Exception:
             self._logger.warning("Failed to capture model.patch", exc_info=True)
 
@@ -1108,6 +1135,10 @@ class Trial:
                     traceback.format_exc()
                 )
 
+            # Capture the agent's diff before downloading logs (C1/C2) for
+            # single-agent runs cancelled after the agent did work.
+            if not self._task.has_steps:
+                await self._finalize_capture()
             await self._maybe_download_logs(
                 source_dir=self._environment.env_paths.agent_dir.as_posix(),
                 target_dir=self._trial_paths.agent_dir,
@@ -1122,6 +1153,10 @@ class Trial:
         except Exception as e:
             self._logger.debug(f"Trial {self.config.trial_name} failed: {e}")
 
+            # Capture the agent's diff before downloading logs (C1/C2) for
+            # single-agent runs that failed outside the handled-agent branches.
+            if not self._task.has_steps:
+                await self._finalize_capture()
             await self._maybe_download_logs(
                 source_dir=self._environment.env_paths.agent_dir.as_posix(),
                 target_dir=self._trial_paths.agent_dir,

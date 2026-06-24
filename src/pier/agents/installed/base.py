@@ -12,7 +12,11 @@ if TYPE_CHECKING:
 from pier.agents.base import BaseAgent
 from pier.environments.base import BaseEnvironment
 from pier.models.agent.install import AgentInstallSpec
-from pier.utils.env import capture_strace_enabled, parse_bool_env_value
+from pier.utils.env import (
+    STRACE_TRACE_FLAGS,
+    capture_strace_enabled,
+    parse_bool_env_value,
+)
 from pier.utils.templating import render_prompt_template
 
 
@@ -33,8 +37,10 @@ def build_capture_command(command: str, strace_log_path: str, *, enabled: bool) 
     """
     if not enabled:
         return command
-    flags = "-f -y -e trace=openat,renameat2,rename,renameat,unlink,unlinkat"
-    return f"strace {flags} -o {strace_log_path} bash -o pipefail -c {shlex.quote(command)}"
+    return (
+        f"strace {STRACE_TRACE_FLAGS} -o {strace_log_path} "
+        f"bash -o pipefail -c {shlex.quote(command)}"
+    )
 
 
 def _capture_strace_enabled() -> bool:

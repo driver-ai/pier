@@ -37,7 +37,11 @@ from pier.models.environment_type import EnvironmentType
 from pier.models.task.config import EnvironmentConfig, TaskOS
 from pier.models.trial.config import ResourceMode, ServiceVolumeConfig
 from pier.models.trial.paths import EnvironmentPaths, TrialPaths
-from pier.utils.env import capture_strace_enabled, resolve_env_vars
+from pier.utils.env import (
+    STRACE_TRACE_FLAGS,
+    capture_strace_enabled,
+    resolve_env_vars,
+)
 
 
 def _sanitize_docker_image_name(name: str) -> str:
@@ -692,20 +696,30 @@ class DockerEnvironment(BaseEnvironment):
                 f"chmod 777 {self._env_paths.agent_dir} {self._env_paths.verifier_dir}"
             )
 
-        # Capture requires strace baked into the image. Verify it is present
-        # now that the container is up, so capture never silently produces an
-        # empty trace at agent runtime.
+        # Capture requires strace baked into the image. Verify it both exists
+        # and can actually run the fixed capture flag set now that the container
+        # is up, so capture never silently produces an empty trace at agent
+        # runtime.
         if capture_strace_enabled():
             await self._preflight_strace_present()
 
     async def _preflight_strace_present(self) -> None:
-        """Fail fast if strace is not on PATH inside the running container."""
-        result = await self.exec("command -v strace")
+        """Fail fast if strace is missing or cannot run the capture flag set.
+
+        Runs the exact ``STRACE_TRACE_FLAGS`` against ``true`` inside the
+        container. This catches a missing strace, an strace too old for a flag
+        (e.g. ``renameat2``), AND a runtime ptrace/seccomp denial — any of which
+        would otherwise surface later as a spurious non-zero agent exit.
+        """
+        probe = f"strace {STRACE_TRACE_FLAGS} -o /dev/null true"
+        result = await self.exec(probe)
         if result.return_code != 0:
             raise RuntimeError(
-                "PIER_CAPTURE_STRACE=1 but strace is not installed in the "
-                "container image. Bake strace into the image "
-                "(apt-get/apk install strace) before enabling capture."
+                "PIER_CAPTURE_STRACE=1 but strace is unavailable or incompatible "
+                f"in the container image (probe `{probe}` exited "
+                f"{result.return_code}: {result.stderr}). Bake a strace that "
+                "supports the capture flag set into the image before enabling "
+                "capture."
             )
 
     async def prepare_logs_for_host(self) -> None:

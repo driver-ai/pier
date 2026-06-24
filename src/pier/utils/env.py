@@ -8,6 +8,12 @@ _SENSITIVE_KEY_RE = re.compile(
 _TRUE_BOOL_VALUES = frozenset({"true", "1", "yes"})
 _FALSE_BOOL_VALUES = frozenset({"false", "0", "no"})
 
+# Fixed strace flag set for capture. Must match pier-analytics'
+# normalize_strace_events parser. Shared by the command wrap
+# (build_capture_command) and the container preflight probe so the two cannot
+# drift.
+STRACE_TRACE_FLAGS = "-f -y -e trace=openat,renameat2,rename,renameat,unlink,unlinkat"
+
 
 def parse_bool_env_value(
     value: str | bool | None,

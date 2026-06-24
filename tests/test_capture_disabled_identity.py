@@ -15,6 +15,7 @@ import pytest
 from pier.agents.installed.base import BaseInstalledAgent
 from pier.agents.installed.claude_code import ClaudeCode
 from pier.environments.docker.docker import DockerEnvironment
+from pier.models.task.config import MCPServerConfig
 
 
 class _RecordingEnvironment:
@@ -171,3 +172,26 @@ def test_network_allowlist_is_baseline_without_mcp(
     allowlist = agent.network_allowlist()
 
     assert allowlist.domains == ["api.anthropic.com"]
+
+
+def test_network_allowlist_baseline_even_with_mcp_when_env_unset(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """With capture off, even an MCP-configured agent gets the baseline allowlist.
+
+    The MCP-host widening is capture-gated, so a non-capture run with mcp_servers
+    set is byte-identical to upstream (the gap the original review flagged).
+    """
+    monkeypatch.delenv("PIER_CAPTURE_STRACE", raising=False)
+    monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_USE_BEDROCK", raising=False)
+    monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK", raising=False)
+
+    server = MCPServerConfig(
+        name="driver",
+        transport="streamable-http",
+        url="https://mcp.driverai.com/v1/sse",
+    )
+    agent = ClaudeCode(logs_dir=tmp_path, mcp_servers=[server])
+
+    assert agent.network_allowlist().domains == ["api.anthropic.com"]

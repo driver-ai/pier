@@ -1,24 +1,16 @@
 from pathlib import Path
 
-from pier.agents.installed.claude_code import ClaudeCode, _mcp_url_host
+import pytest
+
+from pier.agents.installed.claude_code import ClaudeCode
 from pier.models.task.config import MCPServerConfig
 
 
-def test_mcp_url_host_pure_helper():
-    """The host-parse helper is a pure function: URL -> host (or None)."""
-    assert _mcp_url_host("https://mcp.driverai.com/v1/sse") == "mcp.driverai.com"
-    assert _mcp_url_host("https://user:pass@mcp.driverai.com:8443/x") == "mcp.driverai.com"
-    # A bare host (no scheme) is accepted, matching the ANTHROPIC_BASE_URL path.
-    assert _mcp_url_host("mcp.driverai.com") == "mcp.driverai.com"
-    # Defensive: entries without a parseable host return None.
-    assert _mcp_url_host(None) is None
-    assert _mcp_url_host("") is None
-    # A URL with a scheme but no authority has no host.
-    assert _mcp_url_host("file:///tmp/socket") is None
-
-
-def test_network_allowlist_includes_mcp_hosts(tmp_path: Path):
-    """A driver-condition agent with an MCP server reaches that MCP host."""
+def test_network_allowlist_includes_mcp_hosts(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """Under capture, a driver-condition agent reaches its MCP host."""
+    monkeypatch.setenv("PIER_CAPTURE_STRACE", "1")
     server = MCPServerConfig(
         name="driver",
         transport="streamable-http",
@@ -31,8 +23,32 @@ def test_network_allowlist_includes_mcp_hosts(tmp_path: Path):
     assert "mcp.driverai.com" in allowlist.domains
 
 
-def test_network_allowlist_unchanged_without_mcp(tmp_path: Path):
+def test_network_allowlist_mcp_hosts_gated_on_capture(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """With capture OFF, an MCP-configured agent does NOT widen the allowlist.
+
+    This is the DEC-030 byte-identical guarantee for MCP-configured runs (the
+    case the disabled-identity test could not cover before MCP gating).
+    """
+    monkeypatch.delenv("PIER_CAPTURE_STRACE", raising=False)
+    server = MCPServerConfig(
+        name="driver",
+        transport="streamable-http",
+        url="https://mcp.driverai.com/v1/sse",
+    )
+    with_mcp = ClaudeCode(logs_dir=tmp_path, mcp_servers=[server]).network_allowlist()
+    baseline = ClaudeCode(logs_dir=tmp_path).network_allowlist()
+
+    assert with_mcp.domains == baseline.domains
+    assert "mcp.driverai.com" not in with_mcp.domains
+
+
+def test_network_allowlist_unchanged_without_mcp(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
     """The explore condition (no MCP) gets the exact pre-change baseline."""
+    monkeypatch.setenv("PIER_CAPTURE_STRACE", "1")
     baseline = ClaudeCode(logs_dir=tmp_path).network_allowlist()
     no_mcp = ClaudeCode(logs_dir=tmp_path, mcp_servers=[]).network_allowlist()
 

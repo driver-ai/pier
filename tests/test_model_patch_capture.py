@@ -1,9 +1,11 @@
 import asyncio
+from pathlib import Path
 from unittest import mock
 
 import pytest
 
 from pier.agents.installed.base import NonZeroAgentExitCodeError
+from pier.environments.base import ExecResult
 from pier.trial.capture import derive_model_patch
 from pier.trial.execution import AgentTimeoutError
 from pier.trial.trial import Trial
@@ -131,6 +133,97 @@ def _make_trial_for_run_ordering(execute_side_effect=None):
 
 def _ordered_method_names(parent):
     return [c[0] for c in parent.mock_calls]
+
+
+class _ScriptedEnvironment:
+    """Fake environment whose exec returns scripted ExecResults by command.
+
+    `exec` returns non-zero (check=False semantics — Pier's exec does NOT raise)
+    for any command whose key is in `failures`, so the finalizer's return-code
+    handling can be exercised without a real container.
+    """
+
+    def __init__(self, failures: set[str] | None = None, diff: str = ""):
+        self.failures = failures or set()
+        self.diff = diff
+        self.commands: list[str] = []
+
+    async def exec(self, command: str, cwd: str | None = None, **kwargs) -> ExecResult:
+        self.commands.append(command)
+        for key in self.failures:
+            if key in command:
+                return ExecResult(return_code=1, stdout="", stderr=f"fatal: {key}")
+        if command == "pwd":
+            return ExecResult(return_code=0, stdout="/repo\n", stderr="")
+        if "diff --cached" in command:
+            return ExecResult(return_code=0, stdout=self.diff, stderr="")
+        return ExecResult(return_code=0, stdout="", stderr="")
+
+
+def _make_finalize_trial(env: _ScriptedEnvironment, agent_dir: Path):
+    trial = Trial.__new__(Trial)
+    trial._environment = env
+    trial._trial_paths = mock.Mock()
+    trial._trial_paths.agent_dir = agent_dir
+    trial._logger = mock.Mock()
+    return trial
+
+
+def test_finalize_capture_writes_patch_and_resets_index(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    monkeypatch.setenv("PIER_CAPTURE_STRACE", "1")
+    env = _ScriptedEnvironment(diff=_FAKE_STAGED_DIFF)
+    trial = _make_finalize_trial(env, tmp_path)
+
+    asyncio.run(trial._finalize_capture())
+
+    assert (tmp_path / "model.patch").read_text() == _FAKE_STAGED_DIFF
+    # The index is restored so the verifier is not perturbed by `git add -A`.
+    assert any(c == "git reset -q" for c in env.commands)
+
+
+def test_finalize_capture_skips_patch_when_git_diff_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """A failed git command must NOT leave a misleading empty model.patch."""
+    monkeypatch.setenv("PIER_CAPTURE_STRACE", "1")
+    env = _ScriptedEnvironment(failures={"diff --cached"})
+    trial = _make_finalize_trial(env, tmp_path)
+
+    asyncio.run(trial._finalize_capture())
+
+    assert not (tmp_path / "model.patch").exists()
+    trial._logger.warning.assert_called()
+    # Index is still reset (the inner finally) since `git add -A` ran.
+    assert any(c == "git reset -q" for c in env.commands)
+
+
+def test_finalize_capture_skips_patch_when_pwd_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    monkeypatch.setenv("PIER_CAPTURE_STRACE", "1")
+    env = _ScriptedEnvironment(failures={"pwd"})
+    trial = _make_finalize_trial(env, tmp_path)
+
+    asyncio.run(trial._finalize_capture())
+
+    assert not (tmp_path / "model.patch").exists()
+    # Nothing was staged, so no reset is attempted.
+    assert env.commands == ["pwd"]
+
+
+def test_finalize_capture_noop_when_disabled(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    monkeypatch.delenv("PIER_CAPTURE_STRACE", raising=False)
+    env = _ScriptedEnvironment(diff=_FAKE_STAGED_DIFF)
+    trial = _make_finalize_trial(env, tmp_path)
+
+    asyncio.run(trial._finalize_capture())
+
+    assert not (tmp_path / "model.patch").exists()
+    assert env.commands == []
 
 
 def test_finalize_capture_before_download_logs_success_path():
