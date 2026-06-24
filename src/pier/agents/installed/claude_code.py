@@ -1451,4 +1451,6 @@ class ClaudeCode(BaseInstalledAgent):
                 f"/logs/agent/claude-code.txt"
             ),
             env=env,
+            capture_access=True,
+            capture_log_path="/logs/agent/strace.log",
         )
