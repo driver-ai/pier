@@ -103,7 +103,10 @@ def _build_session(
     JSON), or None (no .meta.json file written).
     """
     session_dir = tmp_path / "projects" / "-app"
-    _write_jsonl(session_dir / f"{_PARENT_UUID}.jsonl", _parent_events(with_dispatch=with_dispatch))
+    _write_jsonl(
+        session_dir / f"{_PARENT_UUID}.jsonl",
+        _parent_events(with_dispatch=with_dispatch),
+    )
 
     if subagent_events is not None:
         sub_dir = session_dir / _PARENT_UUID / "subagents"
@@ -199,3 +202,104 @@ def test_subagent_with_only_attachment_events_is_dropped(tmp_path: Path) -> None
     assert trajectory is not None
     # No valid subagent steps -> the subagent is dropped (-> None), parent link no-ops.
     assert trajectory.subagent_trajectories is None
+
+
+def _find_ref_trajectory_ids(trajectory) -> list[str]:
+    """Collect every subagent_trajectory_ref.trajectory_id across all steps."""
+    found: list[str] = []
+    for step in trajectory.steps:
+        if step.observation is None:
+            continue
+        for result in step.observation.results:
+            for ref in result.subagent_trajectory_ref or []:
+                if ref.trajectory_id is not None:
+                    found.append(ref.trajectory_id)
+    return found
+
+
+def test_subagent_ref_links_to_parent_agent_step(tmp_path: Path) -> None:
+    agent = ClaudeCode(logs_dir=tmp_path, model_name="claude-opus-4-8")
+    session_dir = _build_session(
+        tmp_path,
+        subagent_events=_subagent_events(),
+        meta={
+            "agentType": "Explore",
+            "toolUseId": _TOOL_USE_ID,
+            "spawnDepth": 1,
+        },
+    )
+
+    trajectory = agent._convert_events_to_trajectory(session_dir)
+
+    assert trajectory is not None
+    # The dispatch step (tool_call_id == meta.toolUseId) carries a ref to the
+    # embedded subagent's trajectory_id.
+    linked_step = next(
+        step
+        for step in trajectory.steps
+        if step.tool_calls
+        and any(tc.tool_call_id == _TOOL_USE_ID for tc in step.tool_calls)
+    )
+    assert linked_step.observation is not None
+    matching = [
+        ref
+        for result in linked_step.observation.results
+        if result.source_call_id == _TOOL_USE_ID
+        for ref in result.subagent_trajectory_ref or []
+    ]
+    assert [ref.trajectory_id for ref in matching] == ["agent-explore01"]
+
+
+def test_dispatch_without_observation_link_is_skipped(tmp_path: Path) -> None:
+    agent = ClaudeCode(logs_dir=tmp_path, model_name="claude-opus-4-8")
+    # A dispatch step that yields NO observation (a bare tool_use with no
+    # message id and no tool_result -> the converter emits a kind="tool_call"
+    # step with observation=None). Linking must hit the `step.observation is
+    # None` guard and silently no-op (no exception, no ref).
+    session_dir = tmp_path / "projects" / "-app"
+    _write_jsonl(
+        session_dir / f"{_PARENT_UUID}.jsonl",
+        [
+            {
+                "type": "assistant",
+                "timestamp": "2026-06-24T00:00:01Z",
+                "sessionId": "sess-parent",
+                "version": "1.2.3",
+                "message": {
+                    "role": "assistant",
+                    "model": "claude-opus-4-8",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": _TOOL_USE_ID,
+                            "name": "Task",
+                            "input": {"subagent_type": "Explore"},
+                        }
+                    ],
+                },
+            }
+        ],
+    )
+    sub_dir = session_dir / _PARENT_UUID / "subagents"
+    _write_jsonl(sub_dir / "agent-explore01.jsonl", _subagent_events())
+    (sub_dir / "agent-explore01.meta.json").write_text(
+        json.dumps({"agentType": "Explore", "toolUseId": _TOOL_USE_ID, "spawnDepth": 1}),
+        encoding="utf-8",
+    )
+
+    trajectory = agent._convert_events_to_trajectory(session_dir)
+
+    assert trajectory is not None
+    # The dispatch step has no observation...
+    dispatch_steps = [
+        step
+        for step in trajectory.steps
+        if step.tool_calls
+        and any(tc.tool_call_id == _TOOL_USE_ID for tc in step.tool_calls)
+    ]
+    assert dispatch_steps and all(step.observation is None for step in dispatch_steps)
+    # The subagent is still embedded (discovery is independent of linking)...
+    assert trajectory.subagent_trajectories is not None
+    assert len(trajectory.subagent_trajectories) == 1
+    # ...but the guard prevents any ref from being attached.
+    assert _find_ref_trajectory_ids(trajectory) == []

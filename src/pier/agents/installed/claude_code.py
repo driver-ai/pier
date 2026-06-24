@@ -27,6 +27,7 @@ from pier.models.trajectories import (
     Observation,
     ObservationResult,
     Step,
+    SubagentTrajectoryRef,
     ToolCall,
     Trajectory,
 )
@@ -1064,6 +1065,31 @@ class ClaudeCode(BaseInstalledAgent):
             )
         return out
 
+    def _link_subagent_refs(
+        self, steps: list[Step], subagents: list[Trajectory]
+    ) -> None:
+        """Wire each parent ``Agent`` dispatch step to its embedded subagent.
+
+        Match the subagent's ``extra["toolUseId"]`` against the parent's
+        ``ToolCall.tool_call_id`` and APPEND a ``SubagentTrajectoryRef`` to that
+        result's ``subagent_trajectory_ref`` LIST. In-place; defensive no-op
+        when nothing matches or the dispatch has no observation (interrupted
+        run)."""
+        by_tool_use = {
+            (s.agent.extra or {}).get("toolUseId"): s.trajectory_id
+            for s in subagents
+        }
+        for step in steps:
+            for call in step.tool_calls or []:
+                traj_id = by_tool_use.get(call.tool_call_id)
+                if traj_id is None or step.observation is None:
+                    continue
+                for result in step.observation.results:
+                    if result.source_call_id == call.tool_call_id:
+                        refs = list(result.subagent_trajectory_ref or [])
+                        refs.append(SubagentTrajectoryRef(trajectory_id=traj_id))
+                        result.subagent_trajectory_ref = refs
+
     def _convert_events_to_trajectory(self, session_dir: Path) -> Trajectory | None:
         """Convert Claude session into an ATIF trajectory."""
         session_files = list(session_dir.glob("*.jsonl"))
@@ -1220,6 +1246,7 @@ class ClaudeCode(BaseInstalledAgent):
         )
 
         subs = self._convert_subagent_trajectories(session_dir, agent_version)
+        self._link_subagent_refs(steps, subs)
 
         trajectory = Trajectory(
             schema_version="ATIF-v1.7",
