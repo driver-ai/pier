@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 from pier.agents.base import BaseAgent
 from pier.environments.base import BaseEnvironment
 from pier.models.agent.install import AgentInstallSpec
-from pier.utils.env import parse_bool_env_value
+from pier.utils.env import capture_strace_enabled, parse_bool_env_value
 from pier.utils.templating import render_prompt_template
 
 
@@ -40,13 +40,10 @@ def build_capture_command(command: str, strace_log_path: str, *, enabled: bool) 
 def _capture_strace_enabled() -> bool:
     """Return True when the PIER_CAPTURE_STRACE env flag is truthy.
 
-    Unset, empty, "0", and "false" are treated as falsy; any other value is
-    parsed via Pier's standard bool-env convention (true/1/yes vs false/0/no).
+    Thin alias for :func:`pier.utils.env.capture_strace_enabled`, kept so the
+    agent layer and the environment layer share one gate and cannot drift.
     """
-    raw = os.environ.get("PIER_CAPTURE_STRACE")
-    if not raw or not raw.strip():
-        return False
-    return parse_bool_env_value(raw, name="PIER_CAPTURE_STRACE", default=False)
+    return capture_strace_enabled()
 
 
 _F = Any  # Use Any to keep the decorator signature-transparent to type checkers

@@ -40,6 +40,21 @@ def parse_bool_env_value(
     )
 
 
+def capture_strace_enabled() -> bool:
+    """Return True when the PIER_CAPTURE_STRACE env flag is truthy.
+
+    Unset, empty, "0", and "false" are treated as falsy; any other value is
+    parsed via Pier's standard bool-env convention (true/1/yes vs false/0/no).
+
+    Shared single source of truth for the strace-capture gate so the agent
+    layer and the environment layer cannot drift.
+    """
+    raw = os.environ.get("PIER_CAPTURE_STRACE")
+    if not raw or not raw.strip():
+        return False
+    return parse_bool_env_value(raw, name="PIER_CAPTURE_STRACE", default=False)
+
+
 def is_env_template(value: str) -> bool:
     """Return True if ``value`` is an env var template like ``${VAR}`` or ``${VAR:-default}``."""
     return bool(_TEMPLATE_PATTERN.fullmatch(value))

@@ -11,6 +11,7 @@ COMPOSE_PREBUILT_PATH = COMPOSE_DIR / "docker-compose-prebuilt.yaml"
 COMPOSE_NO_NETWORK_PATH = COMPOSE_DIR / "docker-compose-no-network.yaml"
 COMPOSE_WINDOWS_KEEPALIVE_PATH = COMPOSE_DIR / "docker-compose-windows-keepalive.yaml"
 RESOURCES_COMPOSE_NAME = "docker-compose-resources.json"
+CAPABILITIES_COMPOSE_NAME = "docker-compose-capabilities.json"
 
 
 def write_mounts_compose_file(path: Path, mounts: list[ServiceVolumeConfig]) -> Path:
@@ -47,6 +48,18 @@ def write_resources_compose_file(
         resources["reservations"] = reservations
 
     main = {"deploy": {"resources": resources}} if resources else {}
+    compose = {"services": {"main": main}}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(compose, indent=2))
+    return path
+
+
+def write_capabilities_compose_file(
+    path: Path, *, cap_add: list[str], security_opt: list[str] | None = None
+) -> Path:
+    main: dict[str, list[str]] = {"cap_add": list(cap_add)}
+    if security_opt:
+        main["security_opt"] = list(security_opt)
     compose = {"services": {"main": main}}
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(compose, indent=2))
