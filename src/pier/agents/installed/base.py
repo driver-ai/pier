@@ -1,5 +1,6 @@
 import functools
 import os
+import shlex
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,7 +12,11 @@ if TYPE_CHECKING:
 from pier.agents.base import BaseAgent
 from pier.environments.base import BaseEnvironment
 from pier.models.agent.install import AgentInstallSpec
-from pier.utils.env import parse_bool_env_value
+from pier.utils.env import (
+    STRACE_TRACE_FLAGS,
+    capture_strace_enabled,
+    parse_bool_env_value,
+)
 from pier.utils.templating import render_prompt_template
 
 
@@ -19,6 +24,32 @@ class NonZeroAgentExitCodeError(RuntimeError):
     """Raised when the agent process exits with a non-zero exit code."""
 
     pass
+
+
+def build_capture_command(command: str, strace_log_path: str, *, enabled: bool) -> str:
+    """Wrap an agent command to run under strace when capture is enabled.
+
+    Flags are fixed to match pier-analytics' normalize_strace_events.
+    The inner shell uses `-o pipefail` so a failing agent in a pipe
+    (e.g. `claude ... | tee ...`) is NOT masked by tee's exit status —
+    the outer `set -o pipefail` applied by _exec only sees the strace process.
+    When disabled, returns command unchanged (identity).
+    """
+    if not enabled:
+        return command
+    return (
+        f"strace {STRACE_TRACE_FLAGS} -o {strace_log_path} "
+        f"bash -o pipefail -c {shlex.quote(command)}"
+    )
+
+
+def _capture_strace_enabled() -> bool:
+    """Return True when the PIER_CAPTURE_STRACE env flag is truthy.
+
+    Thin alias for :func:`pier.utils.env.capture_strace_enabled`, kept so the
+    agent layer and the environment layer share one gate and cannot drift.
+    """
+    return capture_strace_enabled()
 
 
 _F = Any  # Use Any to keep the decorator signature-transparent to type checkers
@@ -312,11 +343,16 @@ class BaseInstalledAgent(BaseAgent, ABC):
         env: dict[str, str] | None = None,
         cwd: str | None = None,
         timeout_sec: int | None = None,
+        capture_access: bool = False,
+        capture_log_path: str | None = None,
     ) -> Any:
         """Execute a command with logging, _extra_env merging, and error handling.
 
         Returns the ExecResult on success, raises RuntimeError on failure.
         """
+        if capture_access and capture_log_path and _capture_strace_enabled():
+            command = build_capture_command(command, capture_log_path, enabled=True)
+
         merged_env = env
         if self._extra_env:
             merged_env = dict(env) if env else {}
@@ -381,10 +417,18 @@ class BaseInstalledAgent(BaseAgent, ABC):
         env: dict[str, str] | None = None,
         cwd: str | None = None,
         timeout_sec: int | None = None,
+        capture_access: bool = False,
+        capture_log_path: str | None = None,
     ) -> Any:
         """Execute a command as the default agent user."""
         return await self._exec(
-            environment, command, env=env, cwd=cwd, timeout_sec=timeout_sec
+            environment,
+            command,
+            env=env,
+            cwd=cwd,
+            timeout_sec=timeout_sec,
+            capture_access=capture_access,
+            capture_log_path=capture_log_path,
         )
 
     def render_instruction(self, instruction: str) -> str:

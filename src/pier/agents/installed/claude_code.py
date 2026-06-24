@@ -13,6 +13,7 @@ from pier.agents.installed.base import (
     EnvVar,
     with_prompt_template,
 )
+from pier.agents.network import hostname_from_url
 from pier.environments.base import BaseEnvironment
 from pier.models.agent.context import AgentContext
 from pier.models.agent.install import AgentInstallSpec, InstallStep
@@ -30,6 +31,7 @@ from pier.models.trajectories import (
     Trajectory,
 )
 from pier.models.trial.paths import EnvironmentPaths
+from pier.utils.env import capture_strace_enabled
 from pier.utils.trajectory_metrics import (
     extra_with_context_metrics,
     peak_context_tokens_from_steps,
@@ -193,16 +195,31 @@ class ClaudeCode(BaseInstalledAgent):
         )
 
     def network_allowlist(self) -> NetworkAllowlist:
+        # Base domains — unchanged from upstream (kept inline so a non-capture
+        # run is byte-identical to today, DEC-030).
         if self._is_bedrock_mode():
-            return NetworkAllowlist(domains=[".amazonaws.com"])
+            domains = [".amazonaws.com"]
+        else:
+            base_url = self._get_env("ANTHROPIC_BASE_URL")
+            if base_url:
+                parsed = urlparse(
+                    base_url if "://" in base_url else f"https://{base_url}"
+                )
+                domains = [parsed.hostname] if parsed.hostname else ["api.anthropic.com"]
+            else:
+                domains = ["api.anthropic.com"]
 
-        base_url = self._get_env("ANTHROPIC_BASE_URL")
-        if base_url:
-            parsed = urlparse(base_url if "://" in base_url else f"https://{base_url}")
-            if parsed.hostname:
-                return NetworkAllowlist(domains=[parsed.hostname])
+        # Capture's driver condition needs Driver MCP reachable under network
+        # isolation. Gated on capture so non-capture runs stay byte-identical
+        # (DEC-030). hostname_from_url is the canonical parser — it guards
+        # env-templates (${VAR}/{env:...}) and normalizes case/trailing dot.
+        if capture_strace_enabled():
+            for server in self.mcp_servers:
+                host = hostname_from_url(server.url)
+                if host and host not in domains:
+                    domains.append(host)
 
-        return NetworkAllowlist(domains=["api.anthropic.com"])
+        return NetworkAllowlist(domains=domains)
 
     def _get_session_dir(self) -> Path | None:
         """Identify the Claude session directory containing the primary JSONL log"""
@@ -1451,4 +1468,6 @@ class ClaudeCode(BaseInstalledAgent):
                 f"/logs/agent/claude-code.txt"
             ),
             env=env,
+            capture_access=True,
+            capture_log_path="/logs/agent/strace.log",
         )

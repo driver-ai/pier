@@ -22,12 +22,14 @@ from pier.environments.agent_setup import (
 from pier.environments.base import BaseEnvironment, ExecResult
 from pier.environments.capabilities import EnvironmentCapabilities
 from pier.environments.docker import (
+    CAPABILITIES_COMPOSE_NAME,
     COMPOSE_BASE_PATH,
     COMPOSE_BUILD_PATH,
     COMPOSE_NO_NETWORK_PATH,
     COMPOSE_PREBUILT_PATH,
     COMPOSE_WINDOWS_KEEPALIVE_PATH,
     RESOURCES_COMPOSE_NAME,
+    write_capabilities_compose_file,
     write_mounts_compose_file,
     write_resources_compose_file,
 )
@@ -35,7 +37,11 @@ from pier.models.environment_type import EnvironmentType
 from pier.models.task.config import EnvironmentConfig, TaskOS
 from pier.models.trial.config import ResourceMode, ServiceVolumeConfig
 from pier.models.trial.paths import EnvironmentPaths, TrialPaths
-from pier.utils.env import resolve_env_vars
+from pier.utils.env import (
+    STRACE_TRACE_FLAGS,
+    capture_strace_enabled,
+    resolve_env_vars,
+)
 
 
 def _sanitize_docker_image_name(name: str) -> str:
@@ -199,6 +205,8 @@ class DockerEnvironment(BaseEnvironment):
         self._mounts_compose_path: Path | None = None
         self._resources_compose_temp_dir: tempfile.TemporaryDirectory | None = None
         self._resources_compose_path: Path | None = None
+        self._capabilities_compose_temp_dir: tempfile.TemporaryDirectory | None = None
+        self._capabilities_compose_path: Path | None = None
         self._agent_build_context_dir: Path | None = None
         self._egress_proxy_compose_path: Path | None = None
         self._egress_proxy_env: dict[str, str] = {}
@@ -336,6 +344,8 @@ class DockerEnvironment(BaseEnvironment):
         paths = [self._DOCKER_COMPOSE_BASE_PATH]
         if self._resources_compose_path:
             paths.append(self._resources_compose_path)
+        if capture_strace_enabled() and self._capabilities_compose_path:
+            paths.append(self._capabilities_compose_path)
         paths.append(build_or_prebuilt)
 
         if self._is_windows_container:
@@ -451,6 +461,36 @@ class DockerEnvironment(BaseEnvironment):
         finally:
             self._resources_compose_temp_dir = None
             self._resources_compose_path = None
+
+    def _write_capabilities_compose_file(self) -> Path:
+        """Write a compose override granting SYS_PTRACE for strace capture.
+
+        Flags mirror the proven strace spike
+        (research/spikes/strace/run.py: --cap-add=SYS_PTRACE
+        --security-opt seccomp=unconfined).
+        """
+        self._cleanup_capabilities_compose_file()
+        self._capabilities_compose_temp_dir = tempfile.TemporaryDirectory()
+        path = (
+            Path(self._capabilities_compose_temp_dir.name)
+            / f"{self.session_id}-{CAPABILITIES_COMPOSE_NAME}"
+        )
+        return write_capabilities_compose_file(
+            path,
+            cap_add=["SYS_PTRACE"],
+            security_opt=["seccomp:unconfined"],
+        )
+
+    def _cleanup_capabilities_compose_file(self) -> None:
+        if self._capabilities_compose_temp_dir is None:
+            return
+        try:
+            self._capabilities_compose_temp_dir.cleanup()
+        except OSError as e:
+            self.logger.debug(f"Failed to remove capabilities compose file: {e}")
+        finally:
+            self._capabilities_compose_temp_dir = None
+            self._capabilities_compose_path = None
 
     def _validate_definition(self):
         if (
@@ -607,6 +647,8 @@ class DockerEnvironment(BaseEnvironment):
         self._prepare_agent_build_context()
         self._prepare_egress_proxy_compose()
         self._resources_compose_path = self._write_resources_compose_file()
+        if capture_strace_enabled():
+            self._capabilities_compose_path = self._write_capabilities_compose_file()
 
         if self._mounts_json:
             self._mounts_compose_path = self._write_mounts_compose_file()
@@ -654,6 +696,32 @@ class DockerEnvironment(BaseEnvironment):
                 f"chmod 777 {self._env_paths.agent_dir} {self._env_paths.verifier_dir}"
             )
 
+        # Capture requires strace baked into the image. Verify it both exists
+        # and can actually run the fixed capture flag set now that the container
+        # is up, so capture never silently produces an empty trace at agent
+        # runtime.
+        if capture_strace_enabled():
+            await self._preflight_strace_present()
+
+    async def _preflight_strace_present(self) -> None:
+        """Fail fast if strace is missing or cannot run the capture flag set.
+
+        Runs the exact ``STRACE_TRACE_FLAGS`` against ``true`` inside the
+        container. This catches a missing strace, an strace too old for a flag
+        (e.g. ``renameat2``), AND a runtime ptrace/seccomp denial — any of which
+        would otherwise surface later as a spurious non-zero agent exit.
+        """
+        probe = f"strace {STRACE_TRACE_FLAGS} -o /dev/null true"
+        result = await self.exec(probe)
+        if result.return_code != 0:
+            raise RuntimeError(
+                "PIER_CAPTURE_STRACE=1 but strace is unavailable or incompatible "
+                f"in the container image (probe `{probe}` exited "
+                f"{result.return_code}: {result.stderr}). Bake a strace that "
+                "supports the capture flag set into the image before enabling "
+                "capture."
+            )
+
     async def prepare_logs_for_host(self) -> None:
         """Chown the bind-mounted logs directory to the host user.
 
@@ -697,6 +765,7 @@ class DockerEnvironment(BaseEnvironment):
             except Exception as e:
                 self.logger.warning(f"Docker compose down failed: {e}")
         self._cleanup_resources_compose_file()
+        self._cleanup_capabilities_compose_file()
 
     async def upload_file(self, source_path: Path | str, target_path: str):
         await self._platform.upload_file(source_path, target_path)

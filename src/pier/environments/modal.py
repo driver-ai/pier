@@ -36,7 +36,7 @@ from pier.models.environment_type import EnvironmentType
 from pier.models.task.config import EnvironmentConfig
 from pier.models.trial.config import ResourceMode
 from pier.models.trial.paths import EnvironmentPaths, TrialPaths
-from pier.utils.env import resolve_env_vars
+from pier.utils.env import capture_strace_enabled, resolve_env_vars
 from pier.utils.optional_import import MissingExtraError
 
 try:
@@ -1256,6 +1256,11 @@ class ModalEnvironment(BaseEnvironment):
                 tg.create_task(_download_one(p))
 
     async def start(self, force_build: bool) -> None:
+        if capture_strace_enabled():
+            raise RuntimeError(
+                "Capture (PIER_CAPTURE_STRACE) is only supported on the "
+                "Docker backend in v1."
+            )
         return await self._strategy.start(force_build)
 
     async def stop(self, delete: bool):
