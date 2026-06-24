@@ -37,6 +37,19 @@ from pier.utils.trajectory_metrics import (
 )
 
 
+def _mcp_url_host(url: str | None) -> str | None:
+    """Parse the host out of an MCP server URL.
+
+    Pure, unit-testable helper. Returns the hostname (no port/credentials) or
+    ``None`` when the URL is missing or has no parseable host (e.g. stdio
+    transports with no URL, or malformed entries).
+    """
+    if not url:
+        return None
+    parsed = urlparse(url if "://" in url else f"https://{url}")
+    return parsed.hostname or None
+
+
 class ClaudeCode(BaseInstalledAgent):
     SUPPORTS_ATIF: bool = True
     memory_dir: str | None
@@ -194,15 +207,24 @@ class ClaudeCode(BaseInstalledAgent):
 
     def network_allowlist(self) -> NetworkAllowlist:
         if self._is_bedrock_mode():
-            return NetworkAllowlist(domains=[".amazonaws.com"])
+            domains = [".amazonaws.com"]
+        else:
+            base_url = self._get_env("ANTHROPIC_BASE_URL")
+            parsed_host = _mcp_url_host(base_url) if base_url else None
+            if parsed_host:
+                domains = [parsed_host]
+            else:
+                domains = ["api.anthropic.com"]
 
-        base_url = self._get_env("ANTHROPIC_BASE_URL")
-        if base_url:
-            parsed = urlparse(base_url if "://" in base_url else f"https://{base_url}")
-            if parsed.hostname:
-                return NetworkAllowlist(domains=[parsed.hostname])
+        # Allow each configured MCP server's host so the driver condition can
+        # reach Driver MCP under network isolation. No-op when mcp_servers is
+        # empty; NetworkAllowlist normalizes and de-duplicates domains.
+        for server in self.mcp_servers:
+            host = _mcp_url_host(server.url)
+            if host:
+                domains.append(host)
 
-        return NetworkAllowlist(domains=["api.anthropic.com"])
+        return NetworkAllowlist(domains=domains)
 
     def _get_session_dir(self) -> Path | None:
         """Identify the Claude session directory containing the primary JSONL log"""
