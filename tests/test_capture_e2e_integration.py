@@ -30,6 +30,7 @@ it is intentionally NOT made here.
 """
 
 import asyncio
+import json
 import os
 import shutil
 import subprocess
@@ -65,12 +66,24 @@ _TRACED_SYSCALLS = (
     "unlinkat",
 )
 
+# Process-lifecycle syscalls added for actor provenance (Plan 07): execve names
+# each PID, clone/clone3 link the process tree.
+_CLONE_SYSCALLS = ("clone(", "clone3(")
+
 # Opt-in flag: an operator sets this when they intend to pay the build/model
 # cost of a real capture run. The capture agent and its model are configurable
 # so the operator can point the run at credentials they hold.
 _OPT_IN_VAR = "PIER_RUN_CAPTURE_E2E"
 _AGENT_NAME = os.environ.get("PIER_E2E_AGENT", AgentName.MINI_SWE_AGENT.value)
 _MODEL_NAME = os.environ.get("PIER_E2E_MODEL", "anthropic/claude-sonnet-4-5")
+
+# Actor-provenance e2e trigger (Plan 07 Task 8). Subagents are a claude-code-only
+# concept, so this run needs the claude-code agent AND a task whose prompt
+# reliably dispatches a subagent via the Task tool (e.g. "use the Task tool to
+# launch an Explore subagent that lists the repo, then summarize"). The operator
+# supplies that task's path via PIER_E2E_SUBAGENT_TASK; absent it, the test skips
+# rather than driving the generic fixture (which would not dispatch a subagent).
+_SUBAGENT_TASK_VAR = "PIER_E2E_SUBAGENT_TASK"
 
 
 def _docker_daemon_usable() -> bool:
@@ -192,3 +205,74 @@ def test_capture_retained_on_agent_failure(tmp_path, monkeypatch):
     }
 
     _assert_capture_artifacts(TrialPaths(trial_dir=trial.trial_dir))
+
+
+def _assert_actor_provenance_signals(trial_paths: TrialPaths) -> None:
+    """Both actor-provenance signals are present in the real artifacts.
+
+    1. ``strace.log`` carries process-lifecycle records: ``execve(`` (names
+       each PID) and a ``clone(``/``clone3(`` line (links the process tree).
+    2. ``trajectory.json`` has a non-empty ``subagent_trajectories`` array, each
+       entry a valid embedded trajectory with a ``trajectory_id``.
+    """
+    strace_log = trial_paths.agent_dir / "strace.log"
+    trajectory_json = trial_paths.agent_dir / "trajectory.json"
+
+    assert strace_log.exists(), f"missing strace.log at {strace_log}"
+    strace_text = strace_log.read_text()
+    assert "execve(" in strace_text, "strace.log has no execve( lines (no PID naming)"
+    assert any(sc in strace_text for sc in _CLONE_SYSCALLS), (
+        f"strace.log has none of {_CLONE_SYSCALLS!r}; the process tree is not linkable"
+    )
+
+    assert trajectory_json.exists(), f"missing trajectory.json at {trajectory_json}"
+    trajectory = json.loads(trajectory_json.read_text())
+    subs = trajectory.get("subagent_trajectories")
+    assert isinstance(subs, list) and subs, (
+        "trajectory.json has no subagent_trajectories; the dispatch was not captured"
+    )
+    for sub in subs:
+        assert sub.get("trajectory_id"), "embedded subagent missing trajectory_id"
+
+
+def test_capture_records_actor_provenance(tmp_path, monkeypatch):
+    """Plan 07 Task 8: a real capture carries both actor-provenance signals.
+
+    Drives a claude-code run on a subagent-dispatching task (operator-supplied
+    via ``PIER_E2E_SUBAGENT_TASK``) under capture and asserts ``strace.log`` has
+    ``execve(``/``clone(`` lines and ``trajectory.json`` has a populated
+    ``subagent_trajectories``. Skips (in addition to the module Docker/opt-in
+    gate) unless the agent is claude-code and a dispatch task is supplied.
+    """
+    if _AGENT_NAME != AgentName.CLAUDE_CODE.value:
+        pytest.skip(
+            "actor-provenance e2e needs the claude-code agent "
+            f"(set PIER_E2E_AGENT={AgentName.CLAUDE_CODE.value}); subagents are "
+            "claude-code-only"
+        )
+    task_path = os.environ.get(_SUBAGENT_TASK_VAR, "").strip()
+    if not task_path:
+        pytest.skip(
+            f"set {_SUBAGENT_TASK_VAR} to a task that dispatches a subagent via "
+            "the Task tool to run the actor-provenance capture assertion"
+        )
+
+    monkeypatch.setenv("PIER_CAPTURE_STRACE", "1")
+
+    config = TrialConfig(
+        task=TaskConfig(path=Path(task_path)),
+        trials_dir=tmp_path / "trials",
+        agent=AgentConfig(name=_AGENT_NAME, model_name=_MODEL_NAME),
+        environment=EnvironmentConfig(type=EnvironmentType.DOCKER),
+    )
+
+    async def _run() -> Trial:
+        trial = await Trial.create(config)
+        await trial.run()
+        return trial
+
+    trial = asyncio.run(_run())
+
+    trial_paths = TrialPaths(trial_dir=trial.trial_dir)
+    _assert_capture_artifacts(trial_paths)
+    _assert_actor_provenance_signals(trial_paths)
