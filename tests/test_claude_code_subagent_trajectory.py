@@ -234,6 +234,55 @@ def test_same_stem_across_subtrees_does_not_collide(tmp_path: Path) -> None:
     }
 
 
+def test_subagent_with_leading_skipped_event_is_renumbered(tmp_path: Path) -> None:
+    # A subagent whose first event is skipped (orphan tool_result with no tool
+    # name -> ValueError in _convert_event_to_step) would leave the first
+    # surviving step at step_id 2, failing Trajectory's sequential-id validator
+    # and aborting the WHOLE parent conversion. Steps must be renumbered from 1.
+    agent = ClaudeCode(logs_dir=tmp_path, model_name="claude-opus-4-8")
+    session_dir = _build_session(
+        tmp_path,
+        subagent_events=[
+            {
+                "type": "user",
+                "timestamp": "2026-06-24T00:00:05Z",
+                "isSidechain": True,
+                "message": {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "orphan_x",
+                            "content": "orphan output",
+                        }
+                    ],
+                },
+            },
+            {
+                "type": "assistant",
+                "timestamp": "2026-06-24T00:00:06Z",
+                "isSidechain": True,
+                "message": {
+                    "id": "msg_sub_1",
+                    "role": "assistant",
+                    "model": "claude-opus-4-8",
+                    "content": [{"type": "text", "text": "Done."}],
+                    "usage": {"input_tokens": 1, "output_tokens": 1},
+                },
+            },
+        ],
+        meta={"agentType": "Explore", "toolUseId": _TOOL_USE_ID, "spawnDepth": 1},
+    )
+
+    trajectory = agent._convert_events_to_trajectory(session_dir)
+
+    assert trajectory is not None  # parent not dropped
+    assert trajectory.subagent_trajectories is not None
+    sub = trajectory.subagent_trajectories[0]
+    assert [step.step_id for step in sub.steps] == list(range(1, len(sub.steps) + 1))
+    assert sub.steps[0].step_id == 1
+
+
 def _find_ref_trajectory_ids(trajectory) -> list[str]:
     """Collect every subagent_trajectory_ref.trajectory_id across all steps."""
     found: list[str] = []

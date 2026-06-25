@@ -769,25 +769,31 @@ class ClaudeCode(BaseInstalledAgent):
             e for e in ordered if not e.get("isSidechain")
         ]
 
-    def _events_to_steps(self, raw_events: list[dict[str, Any]]) -> list[Step]:
-        """Pure raw-events -> list[Step] (no I/O). Owns the isSidechain reorder,
-        the ``default_model_name`` + ``last_usage_by_msg_id`` recomputation, the
-        normalization loop, message-id grouping, and the final per-step
-        ``default_model_name`` fill. Shared by the parent converter and each
-        subagent session. Returns ``[]`` when no steps are produced."""
-        events = self._sidechain_ordered(raw_events)
-        if not events:
-            return []
-
-        default_model_name = self.model_name
+    def _default_model_name(self, events: list[dict[str, Any]]) -> str | None:
+        """The session default model: the first message ``model`` in the
+        (sidechain-ordered) events, else the agent's configured model. Single
+        source of the rule for both the trajectory-level ``Agent.model_name``
+        and the per-step model fill, so the two cannot drift."""
         for event in events:
             message = event.get("message")
             if not isinstance(message, dict):
                 continue
             model_name = message.get("model")
             if isinstance(model_name, str) and model_name:
-                default_model_name = model_name
-                break
+                return model_name
+        return self.model_name
+
+    def _events_to_steps(self, events: list[dict[str, Any]]) -> list[Step]:
+        """Pure ordered-events -> list[Step] (no I/O). Owns the
+        ``last_usage_by_msg_id`` recomputation, the normalization loop,
+        message-id grouping, the final per-step model fill, and sequential
+        step_id renumbering. ``events`` MUST already be sidechain-ordered (see
+        ``_sidechain_ordered``). Shared by the parent converter and each
+        subagent session. Returns ``[]`` when no steps are produced."""
+        if not events:
+            return []
+
+        default_model_name = self._default_model_name(events)
 
         # Per message id, keep the last usage (streaming updates it on each chunk).
         last_usage_by_msg_id: dict[str, Any] = {}
@@ -1026,6 +1032,13 @@ class ClaudeCode(BaseInstalledAgent):
                 step.model_name = default_model_name
 
             steps.append(step)
+
+        # Renumber sequentially from 1: a skipped event would otherwise leave a
+        # gap (e.g. a leading skip makes the first step_id 2), failing
+        # Trajectory's step_id validator — and for a subagent that raise would
+        # abort the WHOLE parent conversion via populate_context's broad except.
+        for seq, step in enumerate(steps, start=1):
+            step.step_id = seq
         return steps
 
     def _convert_subagent_trajectories(
@@ -1049,26 +1062,35 @@ class ClaudeCode(BaseInstalledAgent):
         # populate_context_post_run's broad except) drop the WHOLE trajectory.
         for jsonl in sorted(session_dir.glob("*/subagents/agent-*.jsonl")):
             meta = _read_subagent_meta(jsonl.with_suffix(".meta.json"))
-            steps = self._events_to_steps(_read_jsonl_events(jsonl))
+            steps = self._events_to_steps(
+                self._sidechain_ordered(_read_jsonl_events(jsonl))
+            )
             if not steps:
                 continue
-            out.append(
-                Trajectory(
-                    schema_version="ATIF-v1.7",
-                    trajectory_id=f"{jsonl.parent.parent.name}/{jsonl.stem}",
-                    agent=Agent(
-                        name=meta.get("agentType") or "subagent",
-                        version=agent_version,
-                        extra={
-                            k: meta[k]
-                            for k in ("toolUseId", "spawnDepth")
-                            if k in meta
-                        }
-                        or None,
-                    ),
-                    steps=steps,
+            # Defense in depth: a single subagent that still fails validation
+            # (e.g. an ATIF invariant the renumber/uniqueness guards miss) must
+            # be skipped, never abort the parent conversion.
+            try:
+                out.append(
+                    Trajectory(
+                        schema_version="ATIF-v1.7",
+                        trajectory_id=f"{jsonl.parent.parent.name}/{jsonl.stem}",
+                        agent=Agent(
+                            name=meta.get("agentType") or "subagent",
+                            version=agent_version,
+                            extra={
+                                k: meta[k]
+                                for k in ("toolUseId", "spawnDepth")
+                                if k in meta
+                            }
+                            or None,
+                        ),
+                        steps=steps,
+                    )
                 )
-            )
+            except ValueError as exc:
+                self.logger.debug(f"Skipping malformed subagent {jsonl}: {exc}")
+                continue
         return out
 
     def _link_subagent_refs(
@@ -1121,12 +1143,12 @@ class ClaudeCode(BaseInstalledAgent):
         if not raw_events:
             return None
 
-        steps = self._events_to_steps(raw_events)
+        events = self._sidechain_ordered(raw_events)
+
+        steps = self._events_to_steps(events)
         if not steps:
             self.logger.debug("No valid steps produced from Claude Code session")
             return None
-
-        events = self._sidechain_ordered(raw_events)
 
         session_id: str = session_dir.name
         for event in events:
@@ -1168,15 +1190,7 @@ class ClaudeCode(BaseInstalledAgent):
         if not agent_extra:
             agent_extra = None
 
-        default_model_name = self.model_name
-        for event in events:
-            message = event.get("message")
-            if not isinstance(message, dict):
-                continue
-            model_name = message.get("model")
-            if isinstance(model_name, str) and model_name:
-                default_model_name = model_name
-                break
+        default_model_name = self._default_model_name(events)
 
         prompt_values = [
             step.metrics.prompt_tokens

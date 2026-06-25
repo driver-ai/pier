@@ -273,6 +273,9 @@ def test_capture_records_actor_provenance(tmp_path, monkeypatch):
 
     trial = asyncio.run(_run())
 
-    trial_paths = TrialPaths(trial_dir=trial.trial_dir)
-    _assert_capture_artifacts(trial_paths)
-    _assert_actor_provenance_signals(trial_paths)
+    # Only assert the actor-provenance artifacts (strace.log + trajectory.json).
+    # A subagent-dispatching task may be read-only (e.g. "launch an Explore
+    # subagent that lists the repo, then summarize"), which yields an empty
+    # model.patch — so do NOT require model.patch here (that is the editing-run
+    # contract covered by the other gated tests).
+    _assert_actor_provenance_signals(TrialPaths(trial_dir=trial.trial_dir))
