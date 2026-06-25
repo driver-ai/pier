@@ -1041,6 +1041,12 @@ class ClaudeCode(BaseInstalledAgent):
         out: list[Trajectory] = []
         # Subagents are a SIBLING of the parent <uuid>.jsonl file; the glob's
         # leading */ covers every parent-uuid subtree (incl. resume-seeding).
+        # The trajectory_id must be unique across ALL subtrees (ATIF v1.7), so
+        # it is qualified by the parent-uuid dir (jsonl.parent = subagents/,
+        # jsonl.parent.parent = <parent-uuid>): the bare stem can repeat when
+        # resume-seeding leaves two subtrees with the same agent-<id> file, and
+        # a duplicate id would fail the parent's uniqueness validator and (via
+        # populate_context_post_run's broad except) drop the WHOLE trajectory.
         for jsonl in sorted(session_dir.glob("*/subagents/agent-*.jsonl")):
             meta = _read_subagent_meta(jsonl.with_suffix(".meta.json"))
             steps = self._events_to_steps(_read_jsonl_events(jsonl))
@@ -1049,7 +1055,7 @@ class ClaudeCode(BaseInstalledAgent):
             out.append(
                 Trajectory(
                     schema_version="ATIF-v1.7",
-                    trajectory_id=jsonl.stem,
+                    trajectory_id=f"{jsonl.parent.parent.name}/{jsonl.stem}",
                     agent=Agent(
                         name=meta.get("agentType") or "subagent",
                         version=agent_version,

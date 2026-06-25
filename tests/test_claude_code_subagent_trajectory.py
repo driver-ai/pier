@@ -139,7 +139,7 @@ def test_subagent_trajectories_populated(tmp_path: Path) -> None:
     assert trajectory.subagent_trajectories is not None
     assert len(trajectory.subagent_trajectories) == 1
     sub = trajectory.subagent_trajectories[0]
-    assert sub.trajectory_id == "agent-explore01"
+    assert sub.trajectory_id == f"{_PARENT_UUID}/agent-explore01"
     assert sub.agent.name == "Explore"
     assert sub.agent.extra is not None
     assert sub.agent.extra["toolUseId"] == _TOOL_USE_ID
@@ -204,6 +204,36 @@ def test_subagent_with_only_attachment_events_is_dropped(tmp_path: Path) -> None
     assert trajectory.subagent_trajectories is None
 
 
+def test_same_stem_across_subtrees_does_not_collide(tmp_path: Path) -> None:
+    # Resume-seeding can leave two parent-uuid subtrees each holding the same
+    # agent-<id> file. The bare stem would collide on the ATIF uniqueness
+    # validator and (via the converter's broad except) drop the WHOLE
+    # trajectory.json. The id must be qualified by the parent-uuid subtree.
+    agent = ClaudeCode(logs_dir=tmp_path, model_name="claude-opus-4-8")
+    session_dir = _build_session(
+        tmp_path,
+        subagent_events=_subagent_events(),
+        meta={"agentType": "Explore", "toolUseId": _TOOL_USE_ID, "spawnDepth": 1},
+    )
+    # Second subtree with an identically-named subagent file.
+    other_uuid = "22222222-2222-2222-2222-222222222222"
+    other_sub = session_dir / other_uuid / "subagents"
+    _write_jsonl(other_sub / "agent-explore01.jsonl", _subagent_events())
+    (other_sub / "agent-explore01.meta.json").write_text(
+        json.dumps({"agentType": "Explore"}), encoding="utf-8"
+    )
+
+    trajectory = agent._convert_events_to_trajectory(session_dir)
+
+    assert trajectory is not None  # not dropped
+    assert trajectory.subagent_trajectories is not None
+    ids = {sub.trajectory_id for sub in trajectory.subagent_trajectories}
+    assert ids == {
+        f"{_PARENT_UUID}/agent-explore01",
+        f"{other_uuid}/agent-explore01",
+    }
+
+
 def _find_ref_trajectory_ids(trajectory) -> list[str]:
     """Collect every subagent_trajectory_ref.trajectory_id across all steps."""
     found: list[str] = []
@@ -247,7 +277,7 @@ def test_subagent_ref_links_to_parent_agent_step(tmp_path: Path) -> None:
         if result.source_call_id == _TOOL_USE_ID
         for ref in result.subagent_trajectory_ref or []
     ]
-    assert [ref.trajectory_id for ref in matching] == ["agent-explore01"]
+    assert [ref.trajectory_id for ref in matching] == [f"{_PARENT_UUID}/agent-explore01"]
 
 
 def test_dispatch_without_observation_link_is_skipped(tmp_path: Path) -> None:
