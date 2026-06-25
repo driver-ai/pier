@@ -10,9 +10,16 @@ _FALSE_BOOL_VALUES = frozenset({"false", "0", "no"})
 
 # Fixed strace flag set for capture. Must match pier-analytics'
 # normalize_strace_events parser. Shared by the command wrap
-# (build_capture_command) and the container preflight probe so the two cannot
-# drift.
-STRACE_TRACE_FLAGS = "-f -y -e trace=openat,renameat2,rename,renameat,unlink,unlinkat"
+# (build_capture_command) and the container preflight probe so they cannot
+# drift. execve+clone/clone3 are added here (Plan 07) to enable actor provenance
+# on the consumer side (Plan 09): execve names each PID, clone links the process
+# tree. fork/vfork are intentionally OMITTED
+# (clone covers process creation on Linux; fork/vfork are absent on aarch64 and
+# would fail the preflight). -s 4096 prevents argv/path truncation (default 32).
+STRACE_TRACE_FLAGS = (
+    "-f -y -s 4096 -e trace=openat,renameat2,rename,renameat,unlink,unlinkat,"
+    "execve,clone,clone3"
+)
 
 
 def parse_bool_env_value(

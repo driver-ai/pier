@@ -27,6 +27,7 @@ from pier.models.trajectories import (
     Observation,
     ObservationResult,
     Step,
+    SubagentTrajectoryRef,
     ToolCall,
     Trajectory,
 )
@@ -37,6 +38,35 @@ from pier.utils.trajectory_metrics import (
     peak_context_tokens_from_steps,
     populate_context_from_final_metrics,
 )
+
+
+def _read_jsonl_events(path: Path) -> list[dict[str, Any]]:
+    """Read newline-delimited JSON objects from ``path``. Defensive: a missing
+    file or malformed line is skipped, never raised."""
+    events: list[dict[str, Any]] = []
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            for line in handle:
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                try:
+                    events.append(json.loads(stripped))
+                except json.JSONDecodeError:
+                    continue
+    except OSError:
+        return []
+    return events
+
+
+def _read_subagent_meta(path: Path) -> dict[str, Any]:
+    """Read a subagent ``.meta.json`` sidecar. Returns ``{}`` on any failure
+    (missing/garbled file, or non-object JSON) so callers can fall back."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 class ClaudeCode(BaseInstalledAgent):
@@ -728,87 +758,42 @@ class ClaudeCode(BaseInstalledAgent):
                     return None
         return None
 
-    def _convert_events_to_trajectory(self, session_dir: Path) -> Trajectory | None:
-        """Convert Claude session into an ATIF trajectory."""
-        session_files = list(session_dir.glob("*.jsonl"))
-
-        if not session_files:
-            self.logger.debug(f"No Claude Code session files found in {session_dir}")
-            return None
-
-        raw_events: list[dict[str, Any]] = []
-        for session_file in session_files:
-            with open(session_file, "r") as handle:
-                for line in handle:
-                    stripped = line.strip()
-                    if not stripped:
-                        continue
-                    try:
-                        raw_events.append(json.loads(stripped))
-                    except json.JSONDecodeError as exc:
-                        self.logger.debug(
-                            f"Skipping malformed JSONL line in {session_file}: {exc}"
-                        )
-
-        if not raw_events:
-            return None
-
-        raw_events.sort(key=lambda e: e.get("timestamp", ""))
-        events = [event for event in raw_events if event.get("isSidechain")] + [
-            event for event in raw_events if not event.get("isSidechain")
+    def _sidechain_ordered(
+        self, raw_events: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Sort raw events by timestamp, then float ``isSidechain`` (subagent)
+        events ahead of mainline events — the ordering both the parent and the
+        subagent step builders rely on."""
+        ordered = sorted(raw_events, key=lambda e: e.get("timestamp", ""))
+        return [e for e in ordered if e.get("isSidechain")] + [
+            e for e in ordered if not e.get("isSidechain")
         ]
-        if not events:
-            return None
 
-        session_id: str = session_dir.name
-        for event in events:
-            sid = event.get("sessionId")
-            if isinstance(sid, str):
-                session_id = sid
-                break
-
-        agent_version: str = "unknown"
-        for event in events:
-            ver = event.get("version")
-            if isinstance(ver, str) and ver:
-                agent_version = ver
-                break
-
-        cwds = {
-            event.get("cwd")
-            for event in events
-            if isinstance(event.get("cwd"), str) and event.get("cwd")
-        }
-        git_branches = {
-            event.get("gitBranch")
-            for event in events
-            if isinstance(event.get("gitBranch"), str) and event.get("gitBranch")
-        }
-        agent_ids = {
-            event.get("agentId")
-            for event in events
-            if isinstance(event.get("agentId"), str) and event.get("agentId")
-        }
-
-        agent_extra: dict[str, Any] | None = {}
-        if cwds:
-            agent_extra["cwds"] = cwds
-        if git_branches:
-            agent_extra["git_branches"] = git_branches
-        if agent_ids:
-            agent_extra["agent_ids"] = agent_ids
-        if not agent_extra:
-            agent_extra = None
-
-        default_model_name = self.model_name
+    def _default_model_name(self, events: list[dict[str, Any]]) -> str | None:
+        """The session default model: the first message ``model`` in the
+        (sidechain-ordered) events, else the agent's configured model. Single
+        source of the rule for both the trajectory-level ``Agent.model_name``
+        and the per-step model fill, so the two cannot drift."""
         for event in events:
             message = event.get("message")
             if not isinstance(message, dict):
                 continue
             model_name = message.get("model")
             if isinstance(model_name, str) and model_name:
-                default_model_name = model_name
-                break
+                return model_name
+        return self.model_name
+
+    def _events_to_steps(self, events: list[dict[str, Any]]) -> list[Step]:
+        """Pure ordered-events -> list[Step] (no I/O). Owns the
+        ``last_usage_by_msg_id`` recomputation, the normalization loop,
+        message-id grouping, the final per-step model fill, and sequential
+        step_id renumbering. ``events`` MUST already be sidechain-ordered (see
+        ``_sidechain_ordered``). Shared by the parent converter and each
+        subagent session. Returns ``[]`` when no steps are produced."""
+        if not events:
+            return []
+
+        default_model_name = self._default_model_name(events)
 
         # Per message id, keep the last usage (streaming updates it on each chunk).
         last_usage_by_msg_id: dict[str, Any] = {}
@@ -1048,9 +1033,164 @@ class ClaudeCode(BaseInstalledAgent):
 
             steps.append(step)
 
+        # Renumber sequentially from 1: a skipped event would otherwise leave a
+        # gap (e.g. a leading skip makes the first step_id 2), failing
+        # Trajectory's step_id validator — and for a subagent that raise would
+        # abort the WHOLE parent conversion via populate_context's broad except.
+        for seq, step in enumerate(steps, start=1):
+            step.step_id = seq
+        return steps
+
+    def _convert_subagent_trajectories(
+        self, session_dir: Path, agent_version: str
+    ) -> list[Trajectory]:
+        """One embedded ATIF ``Trajectory`` per ``<uuid>/subagents/agent-*.jsonl``
+        under the project dir (a SIBLING of the parent ``<uuid>.jsonl`` file, one
+        level below ``session_dir``). ``agent_version`` is passed in (a local of
+        the parent converter, not an instance field). Returns ``[]`` when none;
+        the caller coerces ``[] -> None``. Defensive: malformed session/meta is
+        skipped or falls back, never raises. Drops a subagent that yields no
+        steps (``Trajectory`` requires ``min_length>=1``)."""
+        out: list[Trajectory] = []
+        # Subagents are a SIBLING of the parent <uuid>.jsonl file; the glob's
+        # leading */ covers every parent-uuid subtree (incl. resume-seeding).
+        # The trajectory_id must be unique across ALL subtrees (ATIF v1.7), so
+        # it is qualified by the parent-uuid dir (jsonl.parent = subagents/,
+        # jsonl.parent.parent = <parent-uuid>): the bare stem can repeat when
+        # resume-seeding leaves two subtrees with the same agent-<id> file, and
+        # a duplicate id would fail the parent's uniqueness validator and (via
+        # populate_context_post_run's broad except) drop the WHOLE trajectory.
+        for jsonl in sorted(session_dir.glob("*/subagents/agent-*.jsonl")):
+            meta = _read_subagent_meta(jsonl.with_suffix(".meta.json"))
+            steps = self._events_to_steps(
+                self._sidechain_ordered(_read_jsonl_events(jsonl))
+            )
+            if not steps:
+                continue
+            # Defense in depth: a single subagent that still fails validation
+            # (e.g. an ATIF invariant the renumber/uniqueness guards miss) must
+            # be skipped, never abort the parent conversion.
+            try:
+                out.append(
+                    Trajectory(
+                        schema_version="ATIF-v1.7",
+                        trajectory_id=f"{jsonl.parent.parent.name}/{jsonl.stem}",
+                        agent=Agent(
+                            name=meta.get("agentType") or "subagent",
+                            version=agent_version,
+                            extra={
+                                k: meta[k]
+                                for k in ("toolUseId", "spawnDepth")
+                                if k in meta
+                            }
+                            or None,
+                        ),
+                        steps=steps,
+                    )
+                )
+            except ValueError as exc:
+                self.logger.debug(f"Skipping malformed subagent {jsonl}: {exc}")
+                continue
+        return out
+
+    def _link_subagent_refs(
+        self, steps: list[Step], subagents: list[Trajectory]
+    ) -> None:
+        """Wire each parent ``Agent`` dispatch step to its embedded subagent.
+
+        Match the subagent's ``extra["toolUseId"]`` against the parent's
+        ``ToolCall.tool_call_id`` and APPEND a ``SubagentTrajectoryRef`` to that
+        result's ``subagent_trajectory_ref`` LIST. In-place; defensive no-op
+        when nothing matches or the dispatch has no observation (interrupted
+        run)."""
+        by_tool_use = {
+            (s.agent.extra or {}).get("toolUseId"): s.trajectory_id
+            for s in subagents
+        }
+        for step in steps:
+            for call in step.tool_calls or []:
+                traj_id = by_tool_use.get(call.tool_call_id)
+                if traj_id is None or step.observation is None:
+                    continue
+                for result in step.observation.results:
+                    if result.source_call_id == call.tool_call_id:
+                        refs = list(result.subagent_trajectory_ref or [])
+                        refs.append(SubagentTrajectoryRef(trajectory_id=traj_id))
+                        result.subagent_trajectory_ref = refs
+
+    def _convert_events_to_trajectory(self, session_dir: Path) -> Trajectory | None:
+        """Convert Claude session into an ATIF trajectory."""
+        session_files = list(session_dir.glob("*.jsonl"))
+
+        if not session_files:
+            self.logger.debug(f"No Claude Code session files found in {session_dir}")
+            return None
+
+        raw_events: list[dict[str, Any]] = []
+        for session_file in session_files:
+            with open(session_file, "r") as handle:
+                for line in handle:
+                    stripped = line.strip()
+                    if not stripped:
+                        continue
+                    try:
+                        raw_events.append(json.loads(stripped))
+                    except json.JSONDecodeError as exc:
+                        self.logger.debug(
+                            f"Skipping malformed JSONL line in {session_file}: {exc}"
+                        )
+
+        if not raw_events:
+            return None
+
+        events = self._sidechain_ordered(raw_events)
+
+        steps = self._events_to_steps(events)
         if not steps:
             self.logger.debug("No valid steps produced from Claude Code session")
             return None
+
+        session_id: str = session_dir.name
+        for event in events:
+            sid = event.get("sessionId")
+            if isinstance(sid, str):
+                session_id = sid
+                break
+
+        agent_version: str = "unknown"
+        for event in events:
+            ver = event.get("version")
+            if isinstance(ver, str) and ver:
+                agent_version = ver
+                break
+
+        cwds = {
+            event.get("cwd")
+            for event in events
+            if isinstance(event.get("cwd"), str) and event.get("cwd")
+        }
+        git_branches = {
+            event.get("gitBranch")
+            for event in events
+            if isinstance(event.get("gitBranch"), str) and event.get("gitBranch")
+        }
+        agent_ids = {
+            event.get("agentId")
+            for event in events
+            if isinstance(event.get("agentId"), str) and event.get("agentId")
+        }
+
+        agent_extra: dict[str, Any] | None = {}
+        if cwds:
+            agent_extra["cwds"] = cwds
+        if git_branches:
+            agent_extra["git_branches"] = git_branches
+        if agent_ids:
+            agent_extra["agent_ids"] = agent_ids
+        if not agent_extra:
+            agent_extra = None
+
+        default_model_name = self._default_model_name(events)
 
         prompt_values = [
             step.metrics.prompt_tokens
@@ -1125,6 +1265,9 @@ class ClaudeCode(BaseInstalledAgent):
             extra=final_extra,
         )
 
+        subs = self._convert_subagent_trajectories(session_dir, agent_version)
+        self._link_subagent_refs(steps, subs)
+
         trajectory = Trajectory(
             schema_version="ATIF-v1.7",
             session_id=session_id,
@@ -1136,6 +1279,7 @@ class ClaudeCode(BaseInstalledAgent):
             ),
             steps=steps,
             final_metrics=final_metrics,
+            subagent_trajectories=subs or None,
         )
 
         return trajectory

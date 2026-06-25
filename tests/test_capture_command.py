@@ -2,8 +2,27 @@ import shlex
 import subprocess
 
 from pier.agents.installed.base import build_capture_command
+from pier.utils.env import STRACE_TRACE_FLAGS
 
-_EXPECTED_FLAGS = "-f -y -e trace=openat,renameat2,rename,renameat,unlink,unlinkat"
+_EXPECTED_FLAGS = (
+    "-f -y -s 4096 -e trace=openat,renameat2,rename,renameat,unlink,unlinkat,"
+    "execve,clone,clone3"
+)
+
+
+def test_strace_flags_include_process_lifecycle():
+    # Actor provenance (Plan 09) needs execve (names each PID) and clone/clone3
+    # (links the process tree). -s 4096 keeps argv/paths from truncating.
+    assert STRACE_TRACE_FLAGS == _EXPECTED_FLAGS
+    assert "-s 4096" in STRACE_TRACE_FLAGS
+    for syscall in ("execve", "clone", "clone3"):
+        assert syscall in STRACE_TRACE_FLAGS
+    # fork/vfork are intentionally OMITTED (absent on aarch64 -> preflight fail).
+    assert "fork" not in STRACE_TRACE_FLAGS
+    assert "vfork" not in STRACE_TRACE_FLAGS
+    # The flags reach the wrapped command.
+    wrapped = build_capture_command("claude --print", "/logs/agent/strace.log", enabled=True)
+    assert _EXPECTED_FLAGS in wrapped
 
 
 def test_build_capture_command_wraps_with_strace_when_enabled():
