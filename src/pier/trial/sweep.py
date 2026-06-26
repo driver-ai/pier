@@ -17,9 +17,11 @@ environment variable, NOT via any config field. The builder does not set it.
 
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+
+import toml
 from typing import (
     TYPE_CHECKING,
     Awaitable,
@@ -87,6 +89,89 @@ def load_manifest(path: Path) -> list[ManifestTask]:
         )
         for entry in raw_tasks
     ]
+
+
+# ---------------------------------------------------------------------------
+# Manifest preflight: validate each task is well-formed before any run
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class TaskPreflight:
+    """Per-task preflight result. ``ok`` iff ``problems`` is empty."""
+
+    task: str
+    ok: bool
+    problems: list[str] = field(default_factory=list)
+
+
+def _check_task(entry: ManifestTask) -> list[str]:
+    """Collect every preflight problem for one manifest task (pure-ish I/O)."""
+    problems: list[str] = []
+    task_dir = Path(entry.task_dir)
+
+    if not task_dir.is_dir():
+        problems.append(f"task_dir does not exist or is not a directory: {task_dir}")
+        # Without the directory, nothing below can be checked.
+        return problems
+
+    if not (task_dir / "solution" / "solution.patch").is_file():
+        problems.append("missing solution/solution.patch")
+
+    if not (task_dir / "environment").is_dir():
+        problems.append("missing environment/ directory")
+
+    if not (task_dir / "tests").is_dir():
+        problems.append("missing tests/ directory")
+
+    problems.extend(_check_docker_image(task_dir, entry.strace_image))
+    return problems
+
+
+def _check_docker_image(task_dir: Path, strace_image: str) -> list[str]:
+    """Validate task.toml parses and its docker_image is the strace tag."""
+    toml_path = task_dir / "task.toml"
+    if not toml_path.is_file():
+        return ["missing task.toml"]
+
+    try:
+        doc = toml.load(toml_path)
+    except toml.TomlDecodeError as exc:
+        return [f"task.toml does not parse: {exc}"]
+
+    docker_image = doc.get("environment", {}).get("docker_image")
+    if not docker_image:
+        return ["task.toml [environment].docker_image is missing or empty"]
+
+    if docker_image != strace_image:
+        return [
+            "task.toml [environment].docker_image "
+            f"{docker_image!r} != manifest strace_image {strace_image!r}"
+        ]
+
+    return []
+
+
+def preflight_tasks(manifest: list[ManifestTask]) -> list[TaskPreflight]:
+    """Validate every manifest task on disk before any run is attempted.
+
+    For each task this checks that: the ``task_dir`` exists; a
+    ``solution/solution.patch`` is present; ``task.toml`` exists and parses; its
+    ``[environment].docker_image`` is present and equals the manifest entry's
+    ``strace_image`` (a non-strace image would make the agent-env strace
+    preflight RuntimeError at run time, or silently produce no trace); and the
+    ``environment/`` and ``tests/`` directories exist.
+    """
+    return [
+        TaskPreflight(task=entry.task, ok=not problems, problems=problems)
+        for entry in manifest
+        for problems in (_check_task(entry),)
+    ]
+
+
+def all_green(report: list[TaskPreflight]) -> bool:
+    """Whether every task in a preflight report passed."""
+    return all(p.ok for p in report)
 
 
 def cell_id(
