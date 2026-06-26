@@ -1,7 +1,6 @@
 import json
 from pathlib import Path
 
-import pytest
 
 from pier.models.agent.name import AgentName
 from pier.trial.sweep import (
@@ -94,6 +93,17 @@ def test_build_sweep_configs_sets_model_task_replicate_and_disables_verification
     assert alpha_cells
     for c in alpha_cells:
         assert str(c.config.task.path) == "/abs/tasks/alpha-task"
+
+    # Per-cell manifest provenance: each cell carries ITS task's commit/repo_root
+    # (a sweep spans multiple tasks with different commits — they must not be
+    # stamped once for the whole run).
+    for c in alpha_cells:
+        assert c.task_commit == "a" * 40
+        assert c.repo_root == "/repo"
+    beta_cells = [c for c in cells if c.task == "beta-task"]
+    assert beta_cells
+    for c in beta_cells:
+        assert c.task_commit == "b" * 40
 
     # Models and replicate indices are fully crossed per task.
     by_task = {}
