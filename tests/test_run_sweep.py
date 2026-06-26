@@ -11,6 +11,8 @@ import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 from pier.models.agent.name import AgentName
 from pier.models.task.id import LocalTaskId
 from pier.models.trial.config import (
@@ -134,6 +136,92 @@ def test_classify_trial_status_env_and_agent_setup_failures_are_non_completed(tm
     )
     assert setup_status == "agent_error"
     assert setup_class == "AgentSetupTimeoutError"
+
+
+def test_classify_timeout_with_trajectory_unarmed_is_completed(tmp_path, monkeypatch):
+    # Code-review F1: timeout + trajectory + no strace, capture NOT armed → the
+    # trace is not expected, so this is a completed run, not missing_trace.
+    monkeypatch.delenv("PIER_CAPTURE_STRACE", raising=False)
+    config = _trial_config(tmp_path)
+    result = _trial_result(config, exception_type="AgentTimeoutError")
+
+    status, failure_class = classify_trial_status(
+        result, has_trajectory=True, has_strace=False
+    )
+
+    assert status == "completed"
+    assert failure_class == "agent_timeout"
+
+
+def test_classify_runtimeerror_with_artifacts_is_completed(tmp_path):
+    # Code-review F2: a RuntimeError surfaced AFTER the agent ran (trajectory +
+    # strace present) must not be mislabeled env_error — the agent ran.
+    config = _trial_config(tmp_path)
+    result = _trial_result(config, exception_type="RuntimeError")
+
+    status, _ = classify_trial_status(
+        result, has_trajectory=True, has_strace=True
+    )
+
+    assert status == "completed"
+
+
+def test_error_entry_runtimeerror_is_env_error(tmp_path):
+    # Code-review F8: a runner-RAISED RuntimeError classifies the same as one
+    # returned on a result (env_error), not a hardcoded "other".
+    from pier.trial.sweep import _error_entry, _pending_entry
+
+    cell = _cell(_trial_config(tmp_path), "explore/task/m/0/arm64")
+    entry = _error_entry(_pending_entry(cell), RuntimeError("strace missing"))
+
+    assert entry["trial_status"] == "env_error"
+    assert entry["failure_class"] == "RuntimeError"
+
+
+def test_read_index_corrupt_raises_clear_error(tmp_path):
+    # Code-review F3: a corrupt/non-list index fails with an actionable error,
+    # not a bare traceback that aborts resume.
+    from pier.trial.sweep import _read_index
+
+    corrupt = tmp_path / "capture_index.json"
+    corrupt.write_text("{ this is not json")
+    with pytest.raises(ValueError, match="unreadable"):
+        _read_index(corrupt)
+
+    not_a_list = tmp_path / "obj_index.json"
+    not_a_list.write_text('{"cell_id": "x"}')
+    with pytest.raises(ValueError, match="not a JSON list"):
+        _read_index(not_a_list)
+
+
+def test_terminal_entry_preserves_requested_model_when_model_info_absent(tmp_path):
+    # Code-review (model provenance): a completed cell whose result has no
+    # ModelInfo keeps the cell's REQUESTED model, never collapses to "unknown".
+    cfg = _trial_config(tmp_path / "cell")
+    cell = _cell(cfg, "explore/task/requested-model/0/arm64")
+    cell = SweepCell(
+        cell_id=cell.cell_id,
+        task=cell.task,
+        model="requested-model",
+        replicate_index=0,
+        config=cfg,
+    )
+
+    async def fake_run_trial(config: TrialConfig) -> TrialResult:
+        _write_artifacts(
+            config.trials_dir / "trial-name",
+            trajectory=True,
+            strace="openat(...)",
+            result=True,
+        )
+        return _trial_result(config, model_info=None)
+
+    entries = asyncio.run(
+        run_sweep([cell], tmp_path / "idx.json", run_trial=fake_run_trial)
+    )
+
+    assert entries[0]["trial_status"] == "completed"
+    assert entries[0]["model_name"] == "requested-model"
 
 
 def test_classify_trial_status_strace_missing_image_is_env_error(tmp_path):

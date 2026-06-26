@@ -75,7 +75,7 @@ def test_build_sweep_configs_sets_model_task_replicate_and_disables_verification
     out_root = tmp_path / "out"
 
     cells = build_sweep_configs(
-        tasks, models=models, k=k, arch="arm64", out_root=out_root
+        tasks, models=models, k=k, out_root=out_root
     )
 
     # N tasks (2) x M models (2) x K (2) = 8 cells
@@ -120,7 +120,7 @@ def test_build_sweep_configs_names_trials_dir_with_condition_and_arch_and_return
     out_root = tmp_path / "out"
 
     cells = build_sweep_configs(
-        tasks, models=["model-x"], k=1, arch="arm64", out_root=out_root
+        tasks, models=["model-x"], k=1, out_root=out_root
     )
 
     assert len(cells) == 2
@@ -136,13 +136,53 @@ def test_build_sweep_configs_names_trials_dir_with_condition_and_arch_and_return
         )
 
 
+def test_build_sweep_configs_uses_per_task_arch(tmp_path):
+    # Code-review F6: arch is per-task manifest data, not a run-wide arg — a
+    # mixed-arch manifest stamps each cell's cell_id/trials_dir with ITS arch.
+    manifest = {
+        "tasks": [
+            {
+                "task": "arm-task",
+                "task_dir": "/abs/tasks/arm-task",
+                "lang": "python",
+                "arch": "arm64",
+                "strace_image": "deepswe-arm:arm64-strace",
+                "repo_root": "/repo",
+                "task_commit": "a" * 40,
+            },
+            {
+                "task": "amd-task",
+                "task_dir": "/abs/tasks/amd-task",
+                "lang": "go",
+                "arch": "amd64",
+                "strace_image": "deepswe-amd:amd64-strace",
+                "repo_root": "/repo",
+                "task_commit": "b" * 40,
+            },
+        ]
+    }
+    path = tmp_path / "mixed.json"
+    path.write_text(json.dumps(manifest))
+    tasks = load_manifest(path)
+
+    cells = build_sweep_configs(
+        tasks, models=["m"], k=1, out_root=tmp_path / "out"
+    )
+
+    by_task = {c.task: c for c in cells}
+    assert by_task["arm-task"].cell_id.endswith("/arm64")
+    assert by_task["amd-task"].cell_id.endswith("/amd64")
+    assert "arm64" in str(by_task["arm-task"].config.trials_dir)
+    assert "amd64" in str(by_task["amd-task"].config.trials_dir)
+
+
 def test_build_sweep_configs_is_pure(tmp_path, monkeypatch):
     tasks = load_manifest(_write_manifest(tmp_path))
     out_root = tmp_path / "out"
 
     # No filesystem writes: out_root must not be created by the builder.
     cells = build_sweep_configs(
-        tasks, models=["model-x"], k=1, arch="arm64", out_root=out_root
+        tasks, models=["model-x"], k=1, out_root=out_root
     )
 
     assert not out_root.exists()
@@ -150,7 +190,7 @@ def test_build_sweep_configs_is_pure(tmp_path, monkeypatch):
 
     # Calling twice yields equal configs (deterministic / no side state).
     cells2 = build_sweep_configs(
-        tasks, models=["model-x"], k=1, arch="arm64", out_root=out_root
+        tasks, models=["model-x"], k=1, out_root=out_root
     )
     assert [c.cell_id for c in cells] == [c.cell_id for c in cells2]
     assert [c.config for c in cells] == [c.config for c in cells2]

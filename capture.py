@@ -18,7 +18,13 @@ import asyncio
 import sys
 from pathlib import Path
 
-from pier.trial.sweep import build_sweep_configs, load_manifest, run_sweep
+from pier.trial.sweep import (
+    all_green,
+    build_sweep_configs,
+    load_manifest,
+    preflight_tasks,
+    run_sweep,
+)
 
 # A small explore-condition model set for the smoke run; the full sweep matrix
 # lives in the run manifest / DEC-056.
@@ -33,18 +39,25 @@ async def main() -> None:
     out_root = Path(sys.argv[2]) if len(sys.argv) > 2 else _DEFAULT_OUT_ROOT
 
     tasks = load_manifest(manifest_path)
-    arch = tasks[0].arch if tasks else "arm64"
 
+    # Fail fast BEFORE spending any Docker/credits: reject a task whose image
+    # is not the strace tag (it would RuntimeError the in-container preflight or
+    # produce an empty trace), or that is otherwise malformed.
+    report = preflight_tasks(tasks)
+    if not all_green(report):
+        for p in report:
+            if not p.ok:
+                print(f"preflight FAIL {p.task}: {'; '.join(p.problems)}")
+        sys.exit(1)
+
+    # Arch is per-task (carried on each SweepCell); commit / repo_root likewise.
     cells = build_sweep_configs(
         tasks,
         models=_MODELS,
         k=_K,
-        arch=arch,
         out_root=out_root,
     )
 
-    # Per-task manifest provenance (commit / repo_root) is carried on each
-    # SweepCell by build_sweep_configs, so run_sweep needs no run-wide override.
     capture_index_path = out_root / "capture_index.json"
     entries = await run_sweep(cells, capture_index_path)
 

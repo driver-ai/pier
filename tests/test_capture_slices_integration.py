@@ -84,10 +84,6 @@ def _img_manifest() -> list[ManifestTask]:
     return tasks
 
 
-def _arch(tasks: list[ManifestTask]) -> str:
-    return tasks[0].arch
-
-
 def _is_terminal(entry: dict) -> bool:
     return entry["trial_status"] != "pending"
 
@@ -97,7 +93,7 @@ def test_slice0_capture_produces_artifacts(tmp_path, monkeypatch):
     monkeypatch.setenv("PIER_CAPTURE_STRACE", "1")
     tasks = [t for t in _img_manifest() if t.task == _IMG_TASKS[0]]
     cells = build_sweep_configs(
-        tasks, models=[_SLICE0_MODEL], k=1, arch=_arch(tasks), out_root=tmp_path
+        tasks, models=[_SLICE0_MODEL], k=1, out_root=tmp_path
     )
     assert len(cells) == 1
 
@@ -124,7 +120,7 @@ def test_slice1_45_trials_produce_accounted_index(tmp_path, monkeypatch):
     monkeypatch.setenv("PIER_CAPTURE_STRACE", "1")
     tasks = _img_manifest()
     cells = build_sweep_configs(
-        tasks, models=_MODELS, k=_K, arch=_arch(tasks), out_root=tmp_path
+        tasks, models=_MODELS, k=_K, out_root=tmp_path
     )
     expected = len(tasks) * len(_MODELS) * _K
     assert len(cells) == expected  # 3 * 3 * 5 = 45 by default
