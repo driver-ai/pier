@@ -15,6 +15,7 @@ Capture (strace) is enabled at RUN time via the ``PIER_CAPTURE_STRACE``
 environment variable, NOT via any config field. The builder does not set it.
 """
 
+import asyncio
 import json
 import os
 from dataclasses import dataclass, field
@@ -556,6 +557,7 @@ async def run_sweep(
     *,
     run_trial: Optional[Callable[[TrialConfig], "Awaitable[TrialResult]"]] = None,
     skip_completed: bool = True,
+    concurrency: int = 1,
 ) -> list[CaptureIndexEntry]:
     """Run each cell, persisting a pending->terminal capture-index entry.
 
@@ -576,40 +578,55 @@ async def run_sweep(
     Per-cell failures are caught narrowly so one bad cell does not abort the
     sweep. With ``skip_completed`` a cell whose ``cell_id`` already has a
     ``completed`` entry is skipped and its prior entry preserved.
+
+    ``concurrency`` caps how many cells run their trial at once (default 1 =
+    serial). The slow part — ``run_trial`` — runs OUTSIDE the index lock, so
+    trials genuinely overlap; the lock is held only around the (fast)
+    capture-index read-modify-write, keeping it consistent under concurrency.
+    Note: concurrent strace-traced containers contend for host resources and
+    can inflate per-trial wall time — keep the cap modest and watch
+    ``wall_seconds`` / timeout rates against a serial baseline.
     """
     if run_trial is None:
         run_trial = _default_run_trial
+    if concurrency < 1:
+        raise ValueError("concurrency must be >= 1")
 
     capture_index_path = Path(capture_index_path)
     entries: dict[str, CaptureIndexEntry] = {
         entry["cell_id"]: entry for entry in _read_index(capture_index_path)
     }
+    sem = asyncio.Semaphore(concurrency)
+    index_lock = asyncio.Lock()
 
-    for cell in cells:
-        existing = entries.get(cell.cell_id)
-        if (
-            skip_completed
-            and existing is not None
-            and existing["trial_status"] == "completed"
-        ):
-            continue
+    async def _run_cell(cell: "SweepCell") -> None:
+        async with sem:
+            async with index_lock:
+                existing = entries.get(cell.cell_id)
+                if (
+                    skip_completed
+                    and existing is not None
+                    and existing["trial_status"] == "completed"
+                ):
+                    return
+                pending = _pending_entry(cell)
+                if existing is None:
+                    # First attempt: pending-entry-first so a crash leaves a
+                    # record. A retry keeps its prior terminal until replaced.
+                    entries[cell.cell_id] = pending
+                    _write_index(capture_index_path, list(entries.values()))
 
-        pending = _pending_entry(cell)
-        if existing is None:
-            # First attempt: pending-entry-first so a crash leaves a record.
-            entries[cell.cell_id] = pending
-            _write_index(capture_index_path, list(entries.values()))
-        # else: a prior terminal entry exists (a retry) — keep it until the
-        # re-run produces a new terminal, preserving the prior diagnostic.
+            try:
+                result = await run_trial(cell.config)
+                terminal = _terminal_entry(cell, result, pending)
+            except Exception as exc:  # noqa: BLE001 - per-cell isolation
+                terminal = _error_entry(pending, exc)
 
-        try:
-            result = await run_trial(cell.config)
-            entries[cell.cell_id] = _terminal_entry(cell, result, pending)
-        except Exception as exc:  # noqa: BLE001 - per-cell isolation
-            entries[cell.cell_id] = _error_entry(pending, exc)
+            async with index_lock:
+                entries[cell.cell_id] = terminal
+                _write_index(capture_index_path, list(entries.values()))
 
-        _write_index(capture_index_path, list(entries.values()))
-
+    await asyncio.gather(*(_run_cell(cell) for cell in cells))
     return list(entries.values())
 
 

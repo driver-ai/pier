@@ -224,6 +224,65 @@ def test_terminal_entry_preserves_requested_model_when_model_info_absent(tmp_pat
     assert entries[0]["model_name"] == "requested-model"
 
 
+def test_run_sweep_concurrency_overlaps_and_respects_cap(tmp_path):
+    # Trials genuinely overlap up to the cap; the capture-index stays consistent
+    # (every cell accounted) under concurrency.
+    inflight = 0
+    max_inflight = 0
+
+    async def fake_run_trial(config: TrialConfig) -> TrialResult:
+        nonlocal inflight, max_inflight
+        inflight += 1
+        max_inflight = max(max_inflight, inflight)
+        await asyncio.sleep(0.05)
+        _write_artifacts(
+            config.trials_dir / "trial-name",
+            trajectory=True,
+            strace="openat(...)",
+            result=True,
+        )
+        inflight -= 1
+        return _trial_result(config)
+
+    cells = [
+        _cell(_trial_config(tmp_path / f"c{i}"), f"explore/t/m/{i}/arm64", replicate_index=i)
+        for i in range(6)
+    ]
+    entries = asyncio.run(
+        run_sweep(cells, tmp_path / "idx.json", run_trial=fake_run_trial, concurrency=3)
+    )
+
+    assert len(entries) == 6
+    assert all(e["trial_status"] == "completed" for e in entries)
+    assert 2 <= max_inflight <= 3  # overlapped, never exceeded the cap
+
+
+def test_run_sweep_serial_by_default(tmp_path):
+    inflight = 0
+    max_inflight = 0
+
+    async def fake_run_trial(config: TrialConfig) -> TrialResult:
+        nonlocal inflight, max_inflight
+        inflight += 1
+        max_inflight = max(max_inflight, inflight)
+        await asyncio.sleep(0.01)
+        _write_artifacts(
+            config.trials_dir / "trial-name", trajectory=True, strace="x", result=True
+        )
+        inflight -= 1
+        return _trial_result(config)
+
+    cells = [
+        _cell(_trial_config(tmp_path / f"c{i}"), f"explore/t/m/{i}/arm64", replicate_index=i)
+        for i in range(4)
+    ]
+    asyncio.run(run_sweep(cells, tmp_path / "idx.json", run_trial=fake_run_trial))
+    assert max_inflight == 1  # default concurrency=1 is serial
+
+    with pytest.raises(ValueError, match="concurrency must be >= 1"):
+        asyncio.run(run_sweep(cells, tmp_path / "idx.json", concurrency=0))
+
+
 def test_classify_trial_status_strace_missing_image_is_env_error(tmp_path):
     config = _trial_config(tmp_path)
     # The agent-env strace preflight raises a plain RuntimeError when the
