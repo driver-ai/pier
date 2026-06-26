@@ -1,0 +1,32 @@
+{
+  "_repo_root_note": "best-effort; confirm against a captured trial pwd at Task 8 (11A truth-sanity validates)",
+  "tasks": [
+    {
+      "task": "httpx-streaming-json-iteration",
+      "task_dir": "/Users/adamtilton/work/driver/driver-ai/deep-swe/tasks/httpx-streaming-json-iteration",
+      "lang": "python",
+      "arch": "arm64",
+      "strace_image": "deepswe-httpx:arm64-strace",
+      "repo_root": "/repo",
+      "task_commit": "b5addb64f0161ff6bfe94c124ef76f6a1fba5254"
+    },
+    {
+      "task": "expr-try-catch-errors",
+      "task_dir": "/Users/adamtilton/work/driver/driver-ai/deep-swe/tasks/expr-try-catch-errors",
+      "lang": "go",
+      "arch": "arm64",
+      "strace_image": "deepswe-expr:arm64-strace",
+      "repo_root": "/repo",
+      "task_commit": "851b241a301f7c74646e65e4009c69cf290993a8"
+    },
+    {
+      "task": "koota-deferred-mutation-buffer",
+      "task_dir": "/Users/adamtilton/work/driver/driver-ai/deep-swe/tasks/koota-deferred-mutation-buffer",
+      "lang": "typescript",
+      "arch": "arm64",
+      "strace_image": "deepswe-koota:arm64-strace",
+      "repo_root": "/repo",
+      "task_commit": "31cbe9a1a26b3822a6c82ad50132508087cd24bc"
+    }
+  ]
+}
