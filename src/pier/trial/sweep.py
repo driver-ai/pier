@@ -1,0 +1,638 @@
+"""Pure builders for the Phase C explore-capture sweep.
+
+This module turns a parsed manifest (one entry per benchmark task) into a flat
+list of :class:`SweepCell` records, one per (task, model, replicate). Each cell
+carries a fully-formed :class:`TrialConfig` with verification disabled
+(capture-only runs).
+
+Separation of concerns:
+- :func:`load_manifest` is the ONLY function that touches the filesystem; it
+  reads and parses the manifest JSON.
+- :func:`build_sweep_configs` is pure: it consumes an already-parsed manifest
+  and performs no Docker calls and no filesystem writes.
+
+Capture (strace) is enabled at RUN time via the ``PIER_CAPTURE_STRACE``
+environment variable, NOT via any config field. The builder does not set it.
+"""
+
+import asyncio
+import json
+import os
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+
+import toml
+from typing import (
+    TYPE_CHECKING,
+    Awaitable,
+    Callable,
+    Literal,
+    NotRequired,
+    Optional,
+    TypedDict,
+)
+
+from pier.models.agent.name import AgentName
+from pier.models.trial.config import (
+    AgentConfig,
+    TaskConfig,
+    TrialConfig,
+    VerifierConfig,
+)
+from pier.models.trial.paths import TrialPaths
+from pier.utils.env import capture_strace_enabled
+
+if TYPE_CHECKING:
+    from pier.models.trial.result import TrialResult
+
+CONDITION_EXPLORE = "explore"
+HARNESS_CLAUDE_CODE = "claude-code"
+SAMPLING_API_DEFAULT = "api_default"
+
+# Exception-name -> non-completed status. Matched by ``exception_type`` name
+# (a string) rather than ``isinstance``: classification must work on results
+# loaded from disk where the live exception class is gone.
+_TIMEOUT_EXC = "AgentTimeoutError"
+_ENV_ERROR_EXC = frozenset({"EnvironmentStartTimeoutError", "RuntimeError"})
+_AGENT_ERROR_EXC = frozenset({"AgentSetupTimeoutError"})
+
+
+@dataclass(frozen=True)
+class ManifestTask:
+    """One benchmark task as declared in the sweep manifest."""
+
+    task: str
+    task_dir: str
+    lang: str
+    arch: str
+    strace_image: str
+    repo_root: str
+    task_commit: str
+
+
+def load_manifest(path: Path) -> list[ManifestTask]:
+    """Read and parse the sweep manifest JSON into typed task entries.
+
+    The manifest is a JSON object with a top-level ``tasks`` list. Any
+    top-level keys beginning with ``_`` (e.g. ``_repo_root_note``) are
+    treated as comments and ignored.
+    """
+    data = json.loads(Path(path).read_text())
+    raw_tasks = data["tasks"]
+    return [
+        ManifestTask(
+            task=entry["task"],
+            task_dir=entry["task_dir"],
+            lang=entry["lang"],
+            arch=entry["arch"],
+            strace_image=entry["strace_image"],
+            repo_root=entry["repo_root"],
+            task_commit=entry["task_commit"],
+        )
+        for entry in raw_tasks
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Manifest preflight: validate each task is well-formed before any run
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class TaskPreflight:
+    """Per-task preflight result. ``ok`` iff ``problems`` is empty."""
+
+    task: str
+    ok: bool
+    problems: list[str] = field(default_factory=list)
+
+
+def _check_task(entry: ManifestTask) -> list[str]:
+    """Collect every preflight problem for one manifest task (pure-ish I/O)."""
+    problems: list[str] = []
+    task_dir = Path(entry.task_dir)
+
+    if not task_dir.is_dir():
+        problems.append(f"task_dir does not exist or is not a directory: {task_dir}")
+        # Without the directory, nothing below can be checked.
+        return problems
+
+    if not (task_dir / "solution" / "solution.patch").is_file():
+        problems.append("missing solution/solution.patch")
+
+    if not (task_dir / "environment").is_dir():
+        problems.append("missing environment/ directory")
+
+    if not (task_dir / "tests").is_dir():
+        problems.append("missing tests/ directory")
+
+    problems.extend(_check_docker_image(task_dir, entry.strace_image))
+    return problems
+
+
+def _check_docker_image(task_dir: Path, strace_image: str) -> list[str]:
+    """Validate task.toml parses and its docker_image is the strace tag."""
+    toml_path = task_dir / "task.toml"
+    if not toml_path.is_file():
+        return ["missing task.toml"]
+
+    try:
+        doc = toml.load(toml_path)
+    except toml.TomlDecodeError as exc:
+        return [f"task.toml does not parse: {exc}"]
+
+    docker_image = doc.get("environment", {}).get("docker_image")
+    if not docker_image:
+        return ["task.toml [environment].docker_image is missing or empty"]
+
+    if docker_image != strace_image:
+        return [
+            "task.toml [environment].docker_image "
+            f"{docker_image!r} != manifest strace_image {strace_image!r}"
+        ]
+
+    return []
+
+
+def preflight_tasks(manifest: list[ManifestTask]) -> list[TaskPreflight]:
+    """Validate every manifest task on disk before any run is attempted.
+
+    For each task this checks that: the ``task_dir`` exists; a
+    ``solution/solution.patch`` is present; ``task.toml`` exists and parses; its
+    ``[environment].docker_image`` is present and equals the manifest entry's
+    ``strace_image`` (a non-strace image would make the agent-env strace
+    preflight RuntimeError at run time, or silently produce no trace); and the
+    ``environment/`` and ``tests/`` directories exist.
+    """
+    return [
+        TaskPreflight(task=entry.task, ok=not problems, problems=problems)
+        for entry in manifest
+        for problems in (_check_task(entry),)
+    ]
+
+
+def all_green(report: list[TaskPreflight]) -> bool:
+    """Whether every task in a preflight report passed."""
+    return all(p.ok for p in report)
+
+
+def cell_id(
+    condition: str, task: str, model: str, replicate_index: int, arch: str
+) -> str:
+    """Deterministic, suffix-free identifier for one sweep cell."""
+    return f"{condition}/{task}/{model}/{replicate_index}/{arch}"
+
+
+@dataclass(frozen=True)
+class SweepCell:
+    cell_id: str
+    task: str
+    model: str
+    replicate_index: int  # NOT a seed — Pier does not plumb sampling control
+    config: TrialConfig
+    # Per-cell manifest provenance — each task in a sweep has its own commit /
+    # repo_root, so these are carried on the cell, not passed once to run_sweep.
+    task_commit: str = "unknown"
+    repo_root: str = "unknown"
+
+
+def _trials_dir(out_root: Path, task: str, condition: str, arch: str) -> Path:
+    """Encode (task, condition, arch) into the per-cell trials directory."""
+    return Path(out_root) / task / condition / arch
+
+
+def build_sweep_configs(
+    manifest: list[ManifestTask],
+    models: list[str],
+    k: int,
+    *,
+    condition: str = CONDITION_EXPLORE,
+    out_root: Path,
+) -> list[SweepCell]:
+    """Build one TrialConfig per (task, model, replicate).
+
+    Pure: consumes an already-parsed manifest and returns ``len(manifest) *
+    len(models) * k`` cells. Verification is disabled (capture-only). No Docker,
+    no filesystem writes.
+
+    Arch is per-task manifest data (``ManifestTask.arch``) — NOT a run-wide
+    argument — so a mixed-arch manifest (e.g. arm64 then amd64 per DEC-056)
+    labels each cell's ``cell_id`` / ``trials_dir`` / capture-index ``arch``
+    with ITS task's arch.
+
+    Capture is enabled at run time via the ``PIER_CAPTURE_STRACE`` env var, not
+    here.
+    """
+    cells: list[SweepCell] = []
+    for task in manifest:
+        for model in models:
+            for replicate_index in range(k):
+                config = TrialConfig(
+                    task=TaskConfig(path=Path(task.task_dir)),
+                    trials_dir=_trials_dir(
+                        out_root, task.task, condition, task.arch
+                    ),
+                    agent=AgentConfig(
+                        name=AgentName.CLAUDE_CODE.value,
+                        model_name=model,
+                    ),
+                    verifier=VerifierConfig(disable=True),
+                )
+                cells.append(
+                    SweepCell(
+                        cell_id=cell_id(
+                            condition, task.task, model, replicate_index, task.arch
+                        ),
+                        task=task.task,
+                        model=model,
+                        replicate_index=replicate_index,
+                        config=config,
+                        task_commit=task.task_commit,
+                        repo_root=task.repo_root,
+                    )
+                )
+    return cells
+
+
+# ---------------------------------------------------------------------------
+# Run orchestration + capture-index
+# ---------------------------------------------------------------------------
+
+TrialStatus = Literal[
+    "pending",
+    "completed",
+    "env_error",
+    "agent_error",
+    "capture_error",
+    "missing_trace",
+    "other",
+]
+ModelPatchState = Literal["present_nonempty", "present_empty_no_edits", "absent"]
+
+
+class CaptureIndexEntry(TypedDict):
+    """One row of the capture-index: the durable record for a single cell.
+
+    The schema is sourced from exactly three places so each field has one
+    honest origin:
+
+    - the :class:`SweepCell` (``cell_id``, join keys, ``replicate_index``),
+    - the manifest (``task_commit``, ``repo_root``),
+    - the :class:`~pier.models.trial.result.TrialResult` and on-disk artifacts
+      (model identity, statuses, timing, artifact booleans).
+    """
+
+    cell_id: str
+    trial_id: NotRequired[str]
+    trial_dir: NotRequired[str]
+    task: str
+    task_commit: str
+    repo_root: str
+    condition: str
+    arch: str
+    harness: str
+    model_provider: str
+    model_name: str
+    model_alias: NotRequired[str]
+    model_date: NotRequired[str]
+    sampling_config: str
+    replicate_index: int
+    trial_status: TrialStatus
+    failure_class: NotRequired[str]
+    model_patch_state: NotRequired[ModelPatchState]
+    has_trajectory: bool
+    has_strace: bool
+    has_result: bool
+    wall_seconds: NotRequired[float]
+    timed_out: bool
+    started_at: str
+    finished_at: NotRequired[str]
+
+
+def classify_trial_status(
+    result: "TrialResult",
+    *,
+    has_trajectory: bool,
+    has_strace: bool,
+) -> tuple[TrialStatus, str | None]:
+    """Map a finished :class:`TrialResult` + observed artifacts to a status.
+
+    Artifact-first: if the agent ran and produced a USABLE capture, the cell is
+    ``completed`` regardless of an incidental exception (a timeout records the
+    soft ``agent_timeout`` failure_class). "Usable capture" = a trajectory plus
+    a strace when capture is armed (when capture is NOT armed, no strace is
+    expected). This makes the timeout and no-exception paths symmetric, and
+    stops a late/unrelated exception (e.g. a ``RuntimeError`` from finalize)
+    from masking a real run as an infrastructure failure.
+
+    Only when there is no usable capture does the exception decide the failure:
+    ``EnvironmentStartTimeoutError`` / a pre-run ``RuntimeError`` (e.g. the
+    strace image is missing) → ``env_error``; ``AgentSetupTimeoutError`` →
+    ``agent_error``; a timeout → ``missing_trace``; anything else → ``other``.
+    With no exception and no strace but capture armed → ``missing_trace``.
+
+    Matching is by ``exception_info.exception_type`` (a string) so a result
+    rehydrated from ``result.json`` classifies the same as a live one.
+    """
+    exc = result.exception_info
+    exc_type = exc.exception_type if exc is not None else None
+
+    # Artifact-first: a usable capture means the agent ran.
+    if has_trajectory and (has_strace or not _capture_armed()):
+        return "completed", ("agent_timeout" if exc_type == _TIMEOUT_EXC else None)
+
+    # No usable capture: classify the failure.
+    if exc_type is not None:
+        return _classify_exc(exc_type)
+
+    # No exception, no usable capture: capture armed but the trace did not
+    # survive.
+    if _capture_armed() and not has_strace:
+        return "missing_trace", None
+
+    return "completed", None
+
+
+def _classify_exc(exc_type: str) -> tuple[TrialStatus, str | None]:
+    """Map an exception-type NAME to a non-completed status + failure_class.
+
+    Shared by :func:`classify_trial_status` (no usable capture) and
+    :func:`_error_entry` (the runner itself raised) so the same exception is
+    classified identically whether Pier caught it into a result or let it
+    propagate.
+    """
+    if exc_type == _TIMEOUT_EXC:
+        return "missing_trace", _TIMEOUT_EXC
+    if exc_type in _ENV_ERROR_EXC:
+        return "env_error", exc_type
+    if exc_type in _AGENT_ERROR_EXC:
+        return "agent_error", exc_type
+    return "other", exc_type
+
+
+def _capture_armed() -> bool:
+    """Whether strace capture is armed.
+
+    Delegates to the canonical :func:`pier.utils.env.capture_strace_enabled`
+    (the single source of truth used by the agent/env layers) so this never
+    drifts from how real capture is gated.
+    """
+    return capture_strace_enabled()
+
+
+def _model_patch_state(trial_dir: Path) -> ModelPatchState:
+    """Classify ``agent/model.patch``: nonempty / empty / absent."""
+    model_patch = TrialPaths(trial_dir).agent_dir / "model.patch"
+    if not model_patch.exists():
+        return "absent"
+    if model_patch.read_text().strip():
+        return "present_nonempty"
+    return "present_empty_no_edits"
+
+
+def _wall_seconds(result: "TrialResult") -> float | None:
+    """Derive agent wall time from ``agent_execution`` timing (None-guarded)."""
+    timing = result.agent_execution
+    if timing is None or timing.started_at is None or timing.finished_at is None:
+        return None
+    return (timing.finished_at - timing.started_at).total_seconds()
+
+
+def _model_identity(result: "TrialResult") -> tuple[str, str]:
+    """Extract (provider, name) from ``agent_info.model_info`` (None-guarded)."""
+    model_info = result.agent_info.model_info
+    if model_info is None:
+        return "unknown", "unknown"
+    return (model_info.provider or "unknown"), model_info.name
+
+
+def _resolve_trial_dir(cell: "SweepCell", result: "TrialResult | None") -> Path:
+    """Resolve the cell's trial directory.
+
+    The trial dir is ``config.trials_dir / trial_name``. The trial name is
+    taken off the ``TrialResult`` when one was produced; otherwise the runner
+    failed before a result, so only the cell's ``trials_dir`` is known.
+    """
+    trials_dir = Path(cell.config.trials_dir)
+    if result is not None:
+        return trials_dir / result.trial_name
+    return trials_dir
+
+
+def _read_index(path: Path) -> list[CaptureIndexEntry]:
+    """Read the existing capture-index, failing LOUDLY and actionably on a
+    corrupt or non-list file rather than aborting resume with a bare traceback."""
+    if not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError) as e:
+        raise ValueError(
+            f"capture index at {path} is unreadable ({e}); inspect or remove "
+            "it to resume"
+        ) from e
+    if not isinstance(data, list):
+        raise ValueError(
+            f"capture index at {path} is not a JSON list; inspect or remove it "
+            "to resume"
+        )
+    return data
+
+
+def _write_index(path: Path, entries: list[CaptureIndexEntry]) -> None:
+    """Atomically replace the whole capture-index JSON (temp + os.replace)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(entries, indent=2))
+    os.replace(tmp, path)
+
+
+def _pending_entry(cell: "SweepCell") -> CaptureIndexEntry:
+    """The placeholder row written BEFORE a cell's runner is invoked."""
+    condition, task, model, replicate_index, arch = _parse_cell_id(cell)
+    return CaptureIndexEntry(
+        cell_id=cell.cell_id,
+        task=task,
+        task_commit=cell.task_commit,
+        repo_root=cell.repo_root,
+        condition=condition,
+        arch=arch,
+        harness=HARNESS_CLAUDE_CODE,
+        model_provider="unknown",
+        model_name=model,
+        sampling_config=SAMPLING_API_DEFAULT,
+        replicate_index=replicate_index,
+        trial_status="pending",
+        has_trajectory=False,
+        has_strace=False,
+        has_result=False,
+        timed_out=False,
+        started_at=datetime.now(timezone.utc).isoformat(),
+    )
+
+
+def _parse_cell_id(cell: "SweepCell") -> tuple[str, str, str, int, str]:
+    """Recover (condition, task, model, replicate_index, arch) from a cell.
+
+    ``cell_id`` is ``condition/task/model/replicate_index/arch``; ``task`` and
+    ``replicate_index`` are also carried on the cell directly, so the cell is
+    the authority for those and the id supplies ``condition``/``arch``.
+    """
+    parts = cell.cell_id.split("/")
+    condition, arch = parts[0], parts[-1]
+    return condition, cell.task, cell.model, cell.replicate_index, arch
+
+
+def _terminal_entry(
+    cell: "SweepCell",
+    result: "TrialResult",
+    pending: CaptureIndexEntry,
+) -> CaptureIndexEntry:
+    """Build the terminal entry from a finished result + on-disk artifacts."""
+    trial_dir = _resolve_trial_dir(cell, result)
+    paths = TrialPaths(trial_dir)
+    agent_dir = paths.agent_dir
+
+    has_trajectory = (agent_dir / "trajectory.json").exists()
+    strace_path = agent_dir / "strace.log"
+    has_strace = strace_path.exists() and strace_path.stat().st_size > 0
+    has_result = paths.result_path.exists()
+
+    status, failure_class = classify_trial_status(
+        result, has_trajectory=has_trajectory, has_strace=has_strace
+    )
+    provider, name = _model_identity(result)
+
+    exc = result.exception_info
+    timed_out = exc is not None and exc.exception_type == _TIMEOUT_EXC
+
+    entry: CaptureIndexEntry = dict(pending)  # type: ignore[assignment]
+    entry["trial_id"] = result.trial_name
+    entry["trial_dir"] = str(trial_dir)
+    # Preserve the cell's REQUESTED model (the sweep-matrix join key the pending
+    # entry carries) when the result does not resolve a model identity — never
+    # overwrite it with "unknown".
+    if provider != "unknown":
+        entry["model_provider"] = provider
+    if name != "unknown":
+        entry["model_name"] = name
+    entry["trial_status"] = status
+    entry["has_trajectory"] = has_trajectory
+    entry["has_strace"] = has_strace
+    entry["has_result"] = has_result
+    entry["model_patch_state"] = _model_patch_state(trial_dir)
+    entry["timed_out"] = timed_out
+    if failure_class is not None:
+        entry["failure_class"] = failure_class
+    wall = _wall_seconds(result)
+    if wall is not None:
+        entry["wall_seconds"] = wall
+    if result.finished_at is not None:
+        entry["finished_at"] = result.finished_at.isoformat()
+    return entry
+
+
+def _error_entry(
+    pending: CaptureIndexEntry,
+    exc: BaseException,
+) -> CaptureIndexEntry:
+    """Build a terminal entry when the runner itself raised (no result).
+
+    Routes the raised exception through the SAME ``_classify_exc`` mapping the
+    result path uses, so e.g. a strace-image ``RuntimeError`` is ``env_error``
+    whether Pier caught it into a result or let it propagate.
+    """
+    status, failure_class = _classify_exc(type(exc).__name__)
+    entry: CaptureIndexEntry = dict(pending)  # type: ignore[assignment]
+    entry["trial_status"] = status
+    if failure_class is not None:
+        entry["failure_class"] = failure_class
+    return entry
+
+
+async def run_sweep(
+    cells: list["SweepCell"],
+    capture_index_path: Path,
+    *,
+    run_trial: Optional[Callable[[TrialConfig], "Awaitable[TrialResult]"]] = None,
+    skip_completed: bool = True,
+    concurrency: int = 1,
+) -> list[CaptureIndexEntry]:
+    """Run each cell, persisting a pending->terminal capture-index entry.
+
+    For every cell:
+
+    1. On a FIRST attempt (no prior entry), a ``pending`` entry is persisted
+       ATOMICALLY BEFORE ``run_trial`` runs, so a crash mid-run leaves a record
+       (no silent loss). On a RE-RUN of a non-``completed`` cell the prior
+       terminal entry is LEFT IN PLACE until the re-run yields a new terminal,
+       so a crash mid-retry preserves the earlier diagnostic instead of
+       degrading it to ``pending``.
+    2. ``run_trial(cell.config)`` runs the trial (default: ``Trial.create`` +
+       ``await .run()``).
+    3. Artifacts under ``trial_dir/agent`` are observed, the status is
+       classified, model identity / timing / patch-state are extracted, and the
+       entry is rewritten to its terminal status atomically.
+
+    Per-cell failures are caught narrowly so one bad cell does not abort the
+    sweep. With ``skip_completed`` a cell whose ``cell_id`` already has a
+    ``completed`` entry is skipped and its prior entry preserved.
+
+    ``concurrency`` caps how many cells run their trial at once (default 1 =
+    serial). The slow part — ``run_trial`` — runs OUTSIDE the index lock, so
+    trials genuinely overlap; the lock is held only around the (fast)
+    capture-index read-modify-write, keeping it consistent under concurrency.
+    Note: concurrent strace-traced containers contend for host resources and
+    can inflate per-trial wall time — keep the cap modest and watch
+    ``wall_seconds`` / timeout rates against a serial baseline.
+    """
+    if run_trial is None:
+        run_trial = _default_run_trial
+    if concurrency < 1:
+        raise ValueError("concurrency must be >= 1")
+
+    capture_index_path = Path(capture_index_path)
+    entries: dict[str, CaptureIndexEntry] = {
+        entry["cell_id"]: entry for entry in _read_index(capture_index_path)
+    }
+    sem = asyncio.Semaphore(concurrency)
+    index_lock = asyncio.Lock()
+
+    async def _run_cell(cell: "SweepCell") -> None:
+        async with sem:
+            async with index_lock:
+                existing = entries.get(cell.cell_id)
+                if (
+                    skip_completed
+                    and existing is not None
+                    and existing["trial_status"] == "completed"
+                ):
+                    return
+                pending = _pending_entry(cell)
+                if existing is None:
+                    # First attempt: pending-entry-first so a crash leaves a
+                    # record. A retry keeps its prior terminal until replaced.
+                    entries[cell.cell_id] = pending
+                    _write_index(capture_index_path, list(entries.values()))
+
+            try:
+                result = await run_trial(cell.config)
+                terminal = _terminal_entry(cell, result, pending)
+            except Exception as exc:  # noqa: BLE001 - per-cell isolation
+                terminal = _error_entry(pending, exc)
+
+            async with index_lock:
+                entries[cell.cell_id] = terminal
+                _write_index(capture_index_path, list(entries.values()))
+
+    await asyncio.gather(*(_run_cell(cell) for cell in cells))
+    return list(entries.values())
+
+
+async def _default_run_trial(config: TrialConfig) -> "TrialResult":
+    """Default runner: create and run a real Pier trial (Docker-backed)."""
+    from pier.trial.trial import Trial
+
+    trial = await Trial.create(config)
+    return await trial.run()

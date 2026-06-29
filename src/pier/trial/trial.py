@@ -208,6 +208,9 @@ class Trial:
         )
         self._agent = self._execution.agent
         self._environment = self._execution.environment
+        # Pre-agent repo HEAD, snapshotted before the agent runs so model.patch
+        # diffs against the base even if the agent commits its edits (DEC-019).
+        self._capture_base_sha: str | None = None
 
         self._verifier_timeout_sec = min(
             config.verifier.override_timeout_sec
@@ -494,6 +497,31 @@ class Trial:
 
         self._are_agent_logs_downloaded = True
 
+    async def _capture_base_ref(self) -> None:
+        """Snapshot the repo HEAD BEFORE the agent runs (capture-gated).
+
+        ``model.patch`` later diffs the staged index against this base, so the
+        agent's edits are captured even if the agent ``git commit``s them (after
+        a commit ``HEAD`` already holds the edits, so a diff vs the live ``HEAD``
+        would be empty). Best-effort: on any failure the base stays ``None`` and
+        the finalizer falls back to ``HEAD`` (the prior behaviour).
+        """
+        if not capture_strace_enabled():
+            return
+        try:
+            workdir_result = await self._environment.exec("pwd")
+            workdir = (workdir_result.stdout or "").strip()
+            if workdir_result.return_code != 0 or not workdir:
+                return
+            result = await self._environment.exec("git rev-parse HEAD", cwd=workdir)
+            if result.return_code == 0:
+                self._capture_base_sha = (result.stdout or "").strip() or None
+        except Exception:
+            self._logger.warning(
+                "capture base-ref snapshot failed; model.patch will diff vs HEAD",
+                exc_info=True,
+            )
+
     async def _finalize_capture(self) -> None:
         """Capture the agent's staged diff as ``agent/model.patch`` (DEC-019).
 
@@ -534,12 +562,15 @@ class Trial:
                 return
 
             try:
+                # Diff the staged index against the pre-agent base so committed
+                # edits are captured too (HEAD moves when the agent commits).
+                base_ref = self._capture_base_sha or "HEAD"
                 # Issue git commands in container-repo call order, then replay
                 # the cached stdout through the pure derivation so the staged-diff
                 # spec lives in one place (derive_model_patch) while I/O stays
                 # in this shell.
                 results: dict[tuple[str, ...], str] = {}
-                for git_args in (["add", "-A"], ["diff", "--cached", "HEAD"]):
+                for git_args in (["add", "-A"], ["diff", "--cached", base_ref]):
                     command = "git " + " ".join(shlex.quote(a) for a in git_args)
                     exec_result = await self._environment.exec(command, cwd=workdir)
                     if exec_result.return_code != 0:
@@ -550,7 +581,9 @@ class Trial:
                         return
                     results[tuple(git_args)] = exec_result.stdout or ""
 
-                patch = derive_model_patch(lambda args: results[tuple(args)])
+                patch = derive_model_patch(
+                    lambda args: results[tuple(args)], base_ref=base_ref
+                )
 
                 model_patch_path = self._trial_paths.agent_dir / "model.patch"
                 model_patch_path.write_text(patch)
@@ -1091,6 +1124,7 @@ class Trial:
                     await self._run_steps()
                 else:
                     await self._upload_input_artifacts()
+                    await self._capture_base_ref()
                     try:
                         await self._execute_agent()
 

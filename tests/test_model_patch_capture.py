@@ -45,6 +45,26 @@ def test_derive_model_patch_includes_untracked():
     assert "--- /dev/null" in patch
 
 
+def test_derive_model_patch_diffs_against_base_ref_not_head():
+    # Regression: when the agent git-commits its edits, HEAD moves to include
+    # them, so `diff --cached HEAD` is empty. Diffing against the pre-agent base
+    # ref captures committed (and staged) edits in both cases.
+    calls: list[list[str]] = []
+
+    def fake_run_git(args: list[str]) -> str:
+        calls.append(args)
+        if args[:2] == ["diff", "--cached"]:
+            return _FAKE_STAGED_DIFF
+        return ""
+
+    patch = derive_model_patch(fake_run_git, base_ref="base0ldsha")
+
+    assert ["add", "-A"] in calls
+    assert ["diff", "--cached", "base0ldsha"] in calls
+    assert ["diff", "--cached", "HEAD"] not in calls  # not the live HEAD
+    assert patch == _FAKE_STAGED_DIFF
+
+
 def _make_trial_for_run_ordering(execute_side_effect=None):
     """Build a Trial that records lifecycle call order without real __init__.
 
@@ -97,6 +117,9 @@ def _make_trial_for_run_ordering(execute_side_effect=None):
         trial._setup_agent = loop.run_until_complete(_async_child("_setup_agent"))
         trial._upload_input_artifacts = loop.run_until_complete(
             _async_child("_upload_input_artifacts")
+        )
+        trial._capture_base_ref = loop.run_until_complete(
+            _async_child("_capture_base_ref")
         )
         trial._execute_agent = loop.run_until_complete(
             _async_child("_execute_agent", side_effect=execute_side_effect)
@@ -166,6 +189,7 @@ def _make_finalize_trial(env: _ScriptedEnvironment, agent_dir: Path):
     trial._trial_paths = mock.Mock()
     trial._trial_paths.agent_dir = agent_dir
     trial._logger = mock.Mock()
+    trial._capture_base_sha = None  # falls back to HEAD in the scripted env
     return trial
 
 
@@ -240,6 +264,9 @@ def test_finalize_capture_before_download_logs_success_path():
     first_download = names.index("_maybe_download_logs")
     finalize = names.index("_finalize_capture")
     assert finalize < first_download
+    # The base ref must be snapshotted BEFORE the agent runs (so model.patch can
+    # diff against it even if the agent commits).
+    assert names.index("_capture_base_ref") < names.index("_execute_agent")
 
 
 @pytest.mark.parametrize(
