@@ -194,6 +194,18 @@ class ClaudeCode(BaseInstalledAgent):
         )
 
     def network_allowlist(self) -> NetworkAllowlist:
+        # ENFORCEMENT (verified): the returned domains drive a real container-boundary egress
+        # proxy — a Squid sidecar built into the docker/modal compose that only forwards to
+        # ALLOWLIST_DOMAINS (pier/environments/agent_setup.py:proxy_policy_env + docker.py /
+        # modal.py apply it). It is genuine defense-in-depth for CLIENT-SIDE egress (e.g. a
+        # skill that curls a URL); the MCP endpoint stays reachable because it rides
+        # host.docker.internal/loopback on the docker network, not egress through the proxy.
+        #
+        # LIMITATION (driver-bench Plan 10 / INS-044): WebSearch/WebFetch are Anthropic
+        # SERVER-SIDE tools — they execute inside api.anthropic.com, which MUST stay allowlisted
+        # for the model to run, so the network allowlist CANNOT stop them. The TOOL DENYLIST
+        # (--disallowedTools WebSearch,WebFetch) is the primary and only reliable web lock; the
+        # network allowlist is defense-in-depth only. Do not rely on egress blocking for web.
         if self._is_bedrock_mode():
             return NetworkAllowlist(domains=[".amazonaws.com"])
 
@@ -1362,6 +1374,38 @@ class ClaudeCode(BaseInstalledAgent):
         if trajectory.final_metrics:
             populate_context_from_final_metrics(context, trajectory.final_metrics)
 
+    def _build_setup_command(self) -> str:
+        """Build the static (run-cwd-independent) Claude-Code config setup command.
+
+        Creates the config dir skeleton, then chains the SANCTIONED registration commands —
+        the declared-``skills_dir`` copy, memory, MCP servers, and sub-agents. Extracted from
+        ``run`` so it is unit-testable without launching a container.
+
+        HERMETICITY (driver-bench Plan 10 / INS-044): this deliberately does NOT copy the host
+        operator's ``~/.claude/skills`` (or any other host ``~/.claude`` content). A run must
+        depend only on its declared spec, never on whoever launched it — the previous host copy
+        was non-reproducible and a capability back-door (a web-search skill rode in). The only
+        sanctioned skills source is the benchmark-declared ``self.skills_dir``
+        (``_build_register_skills_command``). The run-cwd-dependent session-seed command is
+        appended by the caller (``run``).
+        """
+        setup_command = (
+            "mkdir -p $CLAUDE_CONFIG_DIR/debug $CLAUDE_CONFIG_DIR/projects/-app "
+            "$CLAUDE_CONFIG_DIR/shell-snapshots $CLAUDE_CONFIG_DIR/statsig "
+            "$CLAUDE_CONFIG_DIR/todos $CLAUDE_CONFIG_DIR/skills"
+        )
+
+        for command in (
+            self._build_register_skills_command(),
+            self._build_register_memory_command(),
+            self._build_register_mcp_servers_command(),
+            self._build_register_agents_command(),
+        ):
+            if command:
+                setup_command += f" && {command}"
+
+        return setup_command
+
     def _build_register_skills_command(self) -> str | None:
         """Return a shell command that copies skills from the environment to Claude's config.
 
@@ -1592,35 +1636,12 @@ class ClaudeCode(BaseInstalledAgent):
 
         env["CLAUDE_CONFIG_DIR"] = (EnvironmentPaths.agent_dir / "sessions").as_posix()
 
-        setup_command = (
-            "mkdir -p $CLAUDE_CONFIG_DIR/debug $CLAUDE_CONFIG_DIR/projects/-app "
-            "$CLAUDE_CONFIG_DIR/shell-snapshots $CLAUDE_CONFIG_DIR/statsig "
-            "$CLAUDE_CONFIG_DIR/todos $CLAUDE_CONFIG_DIR/skills && "
-            "if [ -d ~/.claude/skills ]; then "
-            "cp -r ~/.claude/skills/. $CLAUDE_CONFIG_DIR/skills/ 2>/dev/null || true; "
-            "fi"
-        )
-
-        skills_command = self._build_register_skills_command()
-        if skills_command:
-            setup_command += f" && {skills_command}"
-
-        memory_command = self._build_register_memory_command()
-        if memory_command:
-            setup_command += f" && {memory_command}"
+        setup_command = self._build_setup_command()
 
         run_cwd = environment.task_env_config.workdir
         session_seed_command = self._build_register_session_seed_command(cwd=run_cwd)
         if session_seed_command:
             setup_command += f" && {session_seed_command}"
-
-        mcp_command = self._build_register_mcp_servers_command()
-        if mcp_command:
-            setup_command += f" && {mcp_command}"
-
-        agents_command = self._build_register_agents_command()
-        if agents_command:
-            setup_command += f" && {agents_command}"
 
         cli_flags = self.build_cli_flags()
         extra_flags = (cli_flags + " ") if cli_flags else ""
