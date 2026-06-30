@@ -47,6 +47,10 @@ def test_setup_command_copies_declared_skills_dir(tmp_path: Path):
 
 def test_setup_command_no_declared_skills_dir_means_no_copy(tmp_path: Path):
     agent = ClaudeCode(logs_dir=tmp_path, model_name="anthropic/claude-sonnet-4-5")
+    # No declared skills_dir ⇒ the skills-copy builder returns None — nothing is copied. This
+    # is the repo's "absent when unset" idiom (cf. tests/test_claude_code_agents_mount.py); the
+    # prior `"cp -r" not in cmd or ...` assertion was a tautology (the disjunct was always True).
+    assert agent._build_register_skills_command() is None
+    # The empty skills dir is still created (also covered by test_setup_command_still_makes_config_dirs).
     cmd = agent._build_setup_command()
-    # No declared skills_dir ⇒ no skills *copy* command (only the mkdir of the empty dir).
-    assert "cp -r" not in cmd or "skills/*" not in cmd
+    assert "$CLAUDE_CONFIG_DIR/skills" in cmd
