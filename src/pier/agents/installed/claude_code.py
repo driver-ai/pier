@@ -26,6 +26,7 @@ from pier.models.trajectories import (
     Observation,
     ObservationResult,
     Step,
+    SubagentTrajectoryRef,
     ToolCall,
     Trajectory,
 )
@@ -712,13 +713,41 @@ class ClaudeCode(BaseInstalledAgent):
         return None
 
     def _convert_events_to_trajectory(self, session_dir: Path) -> Trajectory | None:
-        """Convert Claude session into an ATIF trajectory."""
+        """Convert a Claude session directory into an ATIF trajectory.
+
+        Builds the primary trajectory from the ``*.jsonl`` files directly under
+        ``session_dir`` (Claude Code writes the primary session JSONL directly
+        in ``projects/<slug>/<id>.jsonl``), then discovers any delegated
+        subagent sessions under sibling ``<id>/subagents/agent-*.jsonl`` files,
+        converts each into its own embedded ATIF ``Trajectory``, populates
+        ``subagent_trajectories``, and links the spawning ``Task``/``Agent``
+        tool step to its child via ``subagent_trajectory_ref``. Without this,
+        every delegated subagent's internal tool calls (file reads, grep,
+        get_related, etc.) would be lost from the trajectory.
+        """
         session_files = list(session_dir.glob("*.jsonl"))
 
         if not session_files:
             self.logger.debug(f"No Claude Code session files found in {session_dir}")
             return None
 
+        trajectory = self._convert_session_files_to_trajectory(session_files)
+        if trajectory is None:
+            return None
+
+        self._attach_subagent_trajectories(trajectory, session_dir)
+        return trajectory
+
+    def _convert_session_files_to_trajectory(
+        self, session_files: list[Path]
+    ) -> Trajectory | None:
+        """Convert one Claude session (a set of JSONL files) into an ATIF trajectory.
+
+        This is the core event->step conversion shared by both the primary
+        session and each delegated subagent session. It does NOT recurse into
+        nested subagents; callers attach embedded subagents separately so the
+        same conversion logic is reused at every level of the delegation tree.
+        """
         raw_events: list[dict[str, Any]] = []
         for session_file in session_files:
             with open(session_file, "r") as handle:
@@ -743,7 +772,7 @@ class ClaudeCode(BaseInstalledAgent):
         if not events:
             return None
 
-        session_id: str = session_dir.name
+        session_id: str = session_files[0].stem if session_files else "unknown"
         for event in events:
             sid = event.get("sessionId")
             if isinstance(sid, str):
@@ -1122,6 +1151,184 @@ class ClaudeCode(BaseInstalledAgent):
         )
 
         return trajectory
+
+    @staticmethod
+    def _discover_subagent_files(session_dir: Path) -> list[Path]:
+        """Return every ``agent-*.jsonl`` under any ``subagents/`` dir below ``session_dir``.
+
+        Claude Code writes delegated subagent sessions to
+        ``<id>/subagents/agent-<agentId>.jsonl`` siblings of the primary
+        session file. Nested delegations (a subagent that itself spawns
+        subagents) are written flat into the same directory, so a single
+        ``rglob`` finds the whole transitive set; parent->child structure is
+        reconstructed separately via each file's ``.meta.json`` ``toolUseId``.
+        """
+        files = [
+            f
+            for f in session_dir.rglob("subagents/agent-*.jsonl")
+            if f.is_file() and not f.name.endswith(".meta.json")
+        ]
+        return sorted(files)
+
+    @staticmethod
+    def _read_subagent_meta(session_file: Path) -> dict[str, Any]:
+        """Read the sibling ``agent-<id>.meta.json`` for a subagent session file.
+
+        The meta file records ``toolUseId`` (the ``id`` of the spawning
+        ``Task``/``Agent`` tool_use, i.e. the parent->child link),
+        ``agentType`` (subagent_type), and ``description``. Returns an empty
+        dict when the meta file is missing or malformed.
+        """
+        meta_path = session_file.with_suffix(".meta.json")
+        try:
+            return json.loads(meta_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+
+    @staticmethod
+    def _tool_call_ids_in_trajectory(trajectory: Trajectory) -> set[str]:
+        """Collect every ``tool_call_id`` emitted by a trajectory's own steps."""
+        ids: set[str] = set()
+        for step in trajectory.steps:
+            for tool_call in step.tool_calls or []:
+                if tool_call.tool_call_id:
+                    ids.add(tool_call.tool_call_id)
+        return ids
+
+    @staticmethod
+    def _link_subagent_ref(
+        trajectory: Trajectory, tool_use_id: str, child: Trajectory
+    ) -> bool:
+        """Point the step that emitted ``tool_use_id`` at its child trajectory.
+
+        Sets (or appends to) the matching ``ObservationResult``'s
+        ``subagent_trajectory_ref`` with an embedded reference
+        (``trajectory_id`` + informational ``session_id``). When the spawning
+        step has no observation result for that call (e.g. the tool result was
+        never captured), an observation result is synthesised so the link is
+        still recorded. Returns ``True`` when a link was made.
+        """
+        for step in trajectory.steps:
+            if not step.tool_calls:
+                continue
+            if not any(tc.tool_call_id == tool_use_id for tc in step.tool_calls):
+                continue
+
+            ref = SubagentTrajectoryRef(
+                trajectory_id=child.trajectory_id,
+                session_id=child.session_id,
+            )
+            if step.observation is None:
+                step.observation = Observation(
+                    results=[
+                        ObservationResult(
+                            source_call_id=tool_use_id,
+                            subagent_trajectory_ref=[ref],
+                        )
+                    ]
+                )
+                return True
+
+            for result in step.observation.results:
+                if result.source_call_id == tool_use_id:
+                    existing = result.subagent_trajectory_ref or []
+                    result.subagent_trajectory_ref = existing + [ref]
+                    return True
+
+            step.observation.results.append(
+                ObservationResult(
+                    source_call_id=tool_use_id,
+                    subagent_trajectory_ref=[ref],
+                )
+            )
+            return True
+        return False
+
+    def _attach_subagent_trajectories(
+        self, primary: Trajectory, session_dir: Path
+    ) -> None:
+        """Discover, convert, embed and ref-link all delegated subagents.
+
+        Each subagent session JSONL under ``session_dir/**/subagents/`` is
+        converted into its own embedded ATIF ``Trajectory`` (reusing the same
+        event->step conversion as the primary) and given a stable, document-
+        unique ``trajectory_id``. The delegation tree is reconstructed from
+        each subagent's ``.meta.json`` ``toolUseId``: a child is nested under
+        whichever trajectory (primary or another subagent) emitted that
+        tool_use, and the spawning ``Task``/``Agent`` step's
+        ``subagent_trajectory_ref`` is set to point at the child. Children
+        whose parent tool_use cannot be located (orphans, malformed meta) are
+        still embedded at the top level so their tool calls are never lost —
+        recovering the child reads is the priority; ref-linking is secondary.
+        """
+        subagent_files = self._discover_subagent_files(session_dir)
+        if not subagent_files:
+            return
+
+        # Convert each subagent session file into its own trajectory.
+        children: list[dict[str, Any]] = []
+        for idx, session_file in enumerate(subagent_files):
+            try:
+                child = self._convert_session_files_to_trajectory([session_file])
+            except Exception as exc:  # never let one bad session abort the rest
+                self.logger.debug(
+                    f"Failed to convert subagent session {session_file}: {exc}"
+                )
+                continue
+            if child is None:
+                continue
+
+            agent_id = session_file.stem  # "agent-<agentId>"
+            child.trajectory_id = f"subagent-{idx}-{agent_id}"
+            meta = self._read_subagent_meta(session_file)
+            tool_use_id = meta.get("toolUseId")
+            child_extra = dict(child.extra) if child.extra else {}
+            child_extra["subagent_agent_id"] = agent_id
+            if meta.get("agentType"):
+                child_extra["subagent_type"] = meta["agentType"]
+            if meta.get("description"):
+                child_extra["subagent_description"] = meta["description"]
+            if tool_use_id:
+                child_extra["spawning_tool_use_id"] = tool_use_id
+            child.extra = child_extra or None
+
+            children.append(
+                {
+                    "trajectory": child,
+                    "tool_use_id": tool_use_id,
+                    "own_tool_ids": self._tool_call_ids_in_trajectory(child),
+                }
+            )
+
+        if not children:
+            return
+
+        # Resolve each child to its parent trajectory (primary or another
+        # child) by locating which trajectory emitted the spawning tool_use_id.
+        primary_tool_ids = self._tool_call_ids_in_trajectory(primary)
+
+        def parent_for(child_rec: dict[str, Any]) -> Trajectory:
+            tuid = child_rec["tool_use_id"]
+            if tuid:
+                if tuid in primary_tool_ids:
+                    return primary
+                for other in children:
+                    if other is child_rec:
+                        continue
+                    if tuid in other["own_tool_ids"]:
+                        return other["trajectory"]
+            # Orphan: attach to the primary so the child is never dropped.
+            return primary
+
+        for child_rec in children:
+            parent = parent_for(child_rec)
+            child = child_rec["trajectory"]
+            siblings = list(parent.subagent_trajectories or [])
+            siblings.append(child)
+            parent.subagent_trajectories = siblings
+            tuid = child_rec["tool_use_id"]
+            if tuid:
+                self._link_subagent_ref(parent, tuid, child)
 
     def populate_context_post_run(self, context: AgentContext) -> None:
         session_dir = self._get_session_dir()
