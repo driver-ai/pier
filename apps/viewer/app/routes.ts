@@ -21,6 +21,7 @@ export default [
     route("evidence", "routes/evidence.tsx"),
     route("method", "routes/method.tsx"),
     route("tasks", "routes/tasks.tsx"),
+    route("trajectories", "routes/trajectories.tsx"),
     route("trace", "routes/trace.tsx"),
   ]),
   route("task-definitions", "routes/task-definitions.tsx"),

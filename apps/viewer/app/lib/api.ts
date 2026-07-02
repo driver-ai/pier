@@ -14,6 +14,7 @@ import type {
   ConditionMeta,
   DataNote,
   FileInfo,
+  GatherSummary,
   JobFilters,
   JobHeatmapColumnBy,
   JobHeatmapData,
@@ -128,6 +129,44 @@ export async function fetchEnrichedTrajectory(
     );
   }
   // A 200 with a null body means "no trajectory for this kind" (not an error).
+  return response.json();
+}
+
+/**
+ * Standalone gather (producer) trajectory summaries (Trajectories browser).
+ * Returns the list on 200; `[]` on 404 — the run has no gathers sidecar
+ * (mirrors `fetchRunRecords` / the 404 → [] idiom).
+ */
+export async function fetchGathers(): Promise<GatherSummary[]> {
+  const response = await fetch(`${API_BASE}/api/gathers`);
+  if (response.status === 404) {
+    return [];
+  }
+  if (!response.ok) {
+    throw new Error(`Failed to fetch gathers: ${response.statusText}`);
+  }
+  return response.json();
+}
+
+/**
+ * The enriched-trajectory envelope for one standalone gather, addressed by its
+ * `ref` (Trajectories browser gather view). Mirrors `fetchEnrichedTrajectory`:
+ * throws on a non-OK response — a dangling ref yields HTTP 500, which callers
+ * surface as an explicit error state. Returns the `{trajectory, enrichment,
+ * panels}` envelope on 200.
+ */
+export async function fetchTrajectoryByRef(
+  ref: string
+): Promise<EnrichedTrajectoryEnvelope> {
+  const params = new URLSearchParams({ ref });
+  const response = await fetch(
+    `${API_BASE}/api/evidence/trajectory?${params}`
+  );
+  if (!response.ok) {
+    throw new Error(
+      `Failed to fetch gather trajectory: ${response.statusText}`
+    );
+  }
   return response.json();
 }
 

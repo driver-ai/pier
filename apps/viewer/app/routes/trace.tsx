@@ -24,9 +24,18 @@
 // URL-backed `activeTab` (nuqs) makes the view deep-linkable. Renders pier's
 // `Empty` when the record is unknown / the consumer envelope is missing, and
 // loading states while fetching. Presents evidence only (DEC-010).
+//
+// This route has TWO modes, keyed off which URL param is present:
+//   - Record mode (`?record=<id>`) — the consumer/producer/forensics tab view
+//     above. Record takes precedence when both params are present.
+//   - Gather mode (`?gather=<ref>`, no record) — a single standalone gather
+//     trajectory reached from the Trajectories browser. No tabs; it is just the
+//     one gather envelope (`TrajectoryViewer` + `GatherPanels`), fetched by ref
+//     via `fetchTrajectoryByRef`. A dangling ref (HTTP 500 → thrown) shows an
+//     explicit error state, distinct from an empty resolve.
 
 import { useQuery } from "@tanstack/react-query";
-import { FileSearch } from "lucide-react";
+import { FileSearch, Waypoints } from "lucide-react";
 import { parseAsString, useQueryState } from "nuqs";
 import { useMemo } from "react";
 import { Link } from "react-router";
@@ -51,13 +60,47 @@ import {
   EmptyTitle,
 } from "~/components/ui/empty";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "~/components/ui/tabs";
-import { fetchEnrichedTrajectory, fetchRunRecords } from "~/lib/api";
+import {
+  fetchEnrichedTrajectory,
+  fetchRunRecords,
+  fetchTrajectoryByRef,
+} from "~/lib/api";
 
 type TabValue = "consumer" | "producer" | "forensics";
+
+/**
+ * Best-effort parse of a gather ref into `model / condition / seed` for the
+ * header. Refs are opaque paths; when the parse finds nothing, callers fall
+ * back to showing the raw ref. Never throws.
+ */
+function parseGatherRef(ref: string): {
+  model: string | null;
+  condition: string | null;
+  seed: string | null;
+} {
+  const base = ref.split("/").pop() ?? ref;
+  const stem = base.replace(/\.[a-z0-9]+$/i, "");
+  const parts = stem.split(/[._-]/).filter(Boolean);
+  const seedMatch = parts.find((p) => /^s?\d+$/.test(p)) ?? null;
+  return {
+    model: parts[0] ?? null,
+    condition: parts[1] ?? null,
+    seed: seedMatch ? seedMatch.replace(/^s/, "") : null,
+  };
+}
 
 export default function Trace() {
   // The canonical record id (Plan 04 links `/trace?record=<url-encoded id>`).
   const [record] = useQueryState("record", parseAsString.withDefault(""));
+  // A standalone gather ref (Trajectories browser links `/trace?gather=<ref>`).
+  const [gather] = useQueryState("gather", parseAsString.withDefault(""));
+
+  // Record takes precedence when both are present.
+  const isGatherMode = gather.length > 0 && record.length === 0;
+
+  if (isGatherMode) {
+    return <GatherTrace gatherRef={gather} />;
+  }
 
   // URL-backed active tab — deep-linkable. Consumer is the default (null param).
   const [tabParam, setTabParam] = useQueryState(
@@ -318,6 +361,136 @@ export default function Trace() {
             </Card>
           </TabsContent>
         </Tabs>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Single standalone-gather view (gather mode). Fetches the gather envelope by
+ * `ref` and renders it as one trajectory + its gather panels — no consumer /
+ * producer / forensics tabs, because there is only the one gather here. A
+ * dangling ref (HTTP 500 → thrown) surfaces as an explicit error; an envelope
+ * that resolves to nothing surfaces as `Empty`.
+ */
+function GatherTrace({ gatherRef }: { gatherRef: string }) {
+  const {
+    data: envelope,
+    isLoading,
+    error,
+  } = useQuery({
+    queryKey: ["gatherTrajectory", gatherRef],
+    queryFn: () => fetchTrajectoryByRef(gatherRef),
+    enabled: gatherRef.length > 0,
+    staleTime: Infinity,
+    retry: false,
+  });
+
+  const ident = useMemo(() => parseGatherRef(gatherRef), [gatherRef]);
+
+  // Nothing to show: the fetch resolved to a null / trajectory-less envelope.
+  const nothingToShow =
+    !isLoading && error == null && (envelope == null || envelope.trajectory == null);
+
+  return (
+    <div>
+      <div className="mb-8">
+        <Breadcrumb className="mb-4">
+          <BreadcrumbList>
+            <BreadcrumbItem>
+              <BreadcrumbLink asChild>
+                <Link to="/trajectories?view=gathers">Trajectories</Link>
+              </BreadcrumbLink>
+            </BreadcrumbItem>
+            <BreadcrumbSeparator />
+            <BreadcrumbItem>
+              <BreadcrumbPage>Gather</BreadcrumbPage>
+            </BreadcrumbItem>
+          </BreadcrumbList>
+        </Breadcrumb>
+
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h1 className="text-4xl font-normal tracking-tighter font-mono">
+              Gather
+            </h1>
+            <p className="mt-4 text-sm text-muted-foreground">
+              {ident.model || ident.condition || ident.seed ? (
+                <>
+                  {ident.model ? (
+                    <span className="text-foreground">{ident.model}</span>
+                  ) : null}
+                  {ident.condition ? (
+                    <>
+                      {" · "}
+                      <span className="text-foreground">{ident.condition}</span>
+                    </>
+                  ) : null}
+                  {ident.seed ? (
+                    <>
+                      {" · seed "}
+                      <span className="text-foreground">{ident.seed}</span>
+                    </>
+                  ) : null}
+                </>
+              ) : (
+                <span className="font-mono text-foreground">{gatherRef}</span>
+              )}
+            </p>
+          </div>
+          <Button asChild variant="outline" size="sm">
+            <Link to="/trajectories?view=gathers">Back to trajectories</Link>
+          </Button>
+        </div>
+      </div>
+
+      {error != null ? (
+        // Dangling gather ref (HTTP 500) — distinct from an empty resolve.
+        <Card>
+          <CardHeader>
+            <CardTitle>Gather trajectory</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="text-sm text-destructive">
+              The gather reference is dangling — its trajectory could not be
+              resolved
+              {error instanceof Error ? `: ${error.message}` : "."}
+            </div>
+          </CardContent>
+        </Card>
+      ) : nothingToShow ? (
+        <Empty className="border">
+          <EmptyHeader>
+            <EmptyMedia variant="icon">
+              <Waypoints />
+            </EmptyMedia>
+            <EmptyTitle>No gather for this reference</EmptyTitle>
+            <EmptyDescription>
+              This reference resolved to no trajectory. It may be absent from the
+              current run.
+            </EmptyDescription>
+          </EmptyHeader>
+        </Empty>
+      ) : (
+        <div className="flex flex-col gap-6">
+          <Card>
+            <CardHeader>
+              <CardTitle>Gather trajectory</CardTitle>
+            </CardHeader>
+            <CardContent>
+              {isLoading ? (
+                <div className="flex h-32 items-center justify-center text-sm text-muted-foreground">
+                  Loading trajectory…
+                </div>
+              ) : envelope ? (
+                <TrajectoryViewer trajectory={envelope} />
+              ) : null}
+            </CardContent>
+          </Card>
+          {envelope?.panels ? (
+            <GatherPanels panels={envelope.panels} />
+          ) : null}
+        </div>
       )}
     </div>
   );

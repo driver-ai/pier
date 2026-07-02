@@ -493,6 +493,19 @@ export interface RunRecord {
   forensics: Forensics | null;
 }
 
+// One gather (producer) trajectory summary — the `/api/gathers` list rows.
+// Mirrors the backend shape EXACTLY (snake_case). A gather is a standalone
+// context-gathering trajectory addressable by its `ref`; `seed`/`mean_coverage`/
+// `cost_usd` are null-tolerant (a gather may lack any of them).
+export interface GatherSummary {
+  ref: string;
+  model: string;
+  condition: string;
+  seed: number | null;
+  mean_coverage: number | null;
+  cost_usd: number | null;
+}
+
 export interface ModelPricing {
   model_name: string;
   input_cost_per_token: number | null;

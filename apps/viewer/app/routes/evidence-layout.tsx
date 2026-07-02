@@ -14,15 +14,22 @@
 //   showing the folder basename in muted mono; hidden when unavailable.
 
 import { useQuery } from "@tanstack/react-query";
-import { NavLink, Outlet, useLocation } from "react-router";
+import { NavLink, Outlet, useLocation, useSearchParams } from "react-router";
 
 import { fetchConfig } from "~/lib/api";
 import { cn } from "~/lib/utils";
 
-// The section a route belongs to, for active-tab resolution. Tasks/Trace are
-// part of the Evidence flow, so they resolve to "evidence".
-function activeSection(pathname: string): "evidence" | "method" {
+// The section a route belongs to, for active-tab resolution. Tasks and
+// record-mode Trace are part of the Evidence flow, so they resolve to
+// "evidence". The Trajectories browser (`/trajectories`) — and gather-mode
+// `/trace?gather=` reached from it — resolve to "trajectories".
+function activeSection(
+  pathname: string,
+  isGatherTrace: boolean
+): "evidence" | "trajectories" | "method" {
   if (pathname.startsWith("/method")) return "method";
+  if (pathname.startsWith("/trajectories")) return "trajectories";
+  if (pathname.startsWith("/trace") && isGatherTrace) return "trajectories";
   return "evidence";
 }
 
@@ -53,7 +60,12 @@ function NavTab({ to, active, children }: NavTabProps) {
 
 export default function EvidenceLayout() {
   const { pathname } = useLocation();
-  const section = activeSection(pathname);
+  const [searchParams] = useSearchParams();
+  // Gather-mode trace (`?gather=` present, no `record`) belongs to the
+  // Trajectories flow; record-mode trace stays under Evidence.
+  const isGatherTrace =
+    searchParams.has("gather") && !searchParams.get("record");
+  const section = activeSection(pathname, isGatherTrace);
 
   // Run identity — reuse the shared ["config"] query. Hidden when unavailable.
   const { data: config } = useQuery({
@@ -80,6 +92,12 @@ export default function EvidenceLayout() {
           <nav className="flex items-center gap-6">
             <NavTab to="/evidence" active={section === "evidence"}>
               Evidence
+            </NavTab>
+            <NavTab
+              to="/trajectories"
+              active={section === "trajectories"}
+            >
+              Trajectories
             </NavTab>
             <NavTab to="/method" active={section === "method"}>
               Method
