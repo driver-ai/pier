@@ -172,3 +172,27 @@ def test_attach_orphan_child_falls_back_to_primary(tmp_path: Path):
     assert primary.subagent_trajectories and len(primary.subagent_trajectories) == 1
     # Orphan attaches to primary; no ref is forced (the tool_use isn't in the primary's steps).
     assert primary.steps[0].observation is None
+
+
+def test_attach_reference_cycle_between_children_drops_neither(tmp_path: Path):
+    """Two children whose meta toolUseIds point at each other (a cycle, e.g. corrupt/crafted meta)
+    resolve to each other, not the primary. Serialization walks from the root, so without a guard
+    both trajectories — and all their recovered tool calls — vanish. The cycle must fall back to the
+    primary so neither is dropped (the method's documented guarantee)."""
+    primary = _primary_with_call("toolu_PARENT")
+    # A spawned by B's tool_call (toolu_B); B spawned by A's tool_call (toolu_A) → a 2-cycle.
+    _write_child_session(tmp_path, "a", own_tool_id="toolu_A", tool_use_id="toolu_B")
+    _write_child_session(tmp_path, "b", own_tool_id="toolu_B", tool_use_id="toolu_A")
+    _agent()._attach_subagent_trajectories(primary, tmp_path)
+
+    # Both children survive, reachable directly from the root (cycle broken at the primary).
+    assert primary.subagent_trajectories and len(primary.subagent_trajectories) == 2
+    ids = {t.trajectory_id for t in primary.subagent_trajectories}
+    assert any("agent-a" in i for i in ids) and any("agent-b" in i for i in ids)
+    # Neither is nested under the other (that nesting is the cycle we refused to build).
+    assert all(not t.subagent_trajectories for t in primary.subagent_trajectories)
+    # Their recovered tool calls are preserved (the whole point of "never dropped").
+    recovered = set()
+    for t in primary.subagent_trajectories:
+        recovered |= ClaudeCode._tool_call_ids_in_trajectory(t)
+    assert {"toolu_A", "toolu_B"} <= recovered

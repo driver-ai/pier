@@ -1339,8 +1339,29 @@ class ClaudeCode(BaseInstalledAgent):
             # Orphan: attach to the primary so the child is never dropped.
             return primary
 
-        for child_rec in children:
-            parent = parent_for(child_rec)
+        # Resolve every child's parent first, then attach. A child can resolve to
+        # another child, so the parent links form a forest that MUST terminate at the
+        # primary — serialization walks from the root, so a child not reachable from
+        # the primary is silently dropped. A reference cycle between children (e.g.
+        # corrupt/crafted meta where two toolUseIds point at each other) never reaches
+        # the primary, so those children fall back to the primary directly: the "never
+        # dropped" guarantee cannot rely on sibling resolution always terminating.
+        resolved = [(rec, parent_for(rec)) for rec in children]
+        parent_by_child = {id(rec["trajectory"]): parent for rec, parent in resolved}
+
+        def reaches_primary(parent: Trajectory) -> bool:
+            seen: set[int] = set()
+            node: Trajectory | None = parent
+            while node is not primary:
+                if node is None or id(node) in seen:
+                    return False  # unreachable parent or a cycle — never hits the root
+                seen.add(id(node))
+                node = parent_by_child.get(id(node))
+            return True
+
+        for child_rec, parent in resolved:
+            if not reaches_primary(parent):
+                parent = primary  # break the cycle at the root so nothing is dropped
             child = child_rec["trajectory"]
             siblings = list(parent.subagent_trajectories or [])
             siblings.append(child)
