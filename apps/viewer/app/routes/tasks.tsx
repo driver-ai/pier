@@ -268,14 +268,18 @@ export default function Tasks() {
         <FilterSelect
           label="Model"
           value={modelValue}
-          onChange={(v) => setModel(v === ALL ? null : v)}
+          // Model/mode default to a concrete value when the param is absent, so
+          // "All" must be stored as the ALL sentinel in the URL — NOT cleared
+          // (a cleared param resolves back to the concrete default). Differs from
+          // Task type, whose absent-default is already All.
+          onChange={(v) => setModel(v)}
           options={modelOpts}
           allowAll
         />
         <FilterSelect
           label="Consumer mode"
           value={examModeValue}
-          onChange={(v) => setExamMode(v === ALL ? null : v)}
+          onChange={(v) => setExamMode(v)}
           options={examModeOpts}
           allowAll
         />
