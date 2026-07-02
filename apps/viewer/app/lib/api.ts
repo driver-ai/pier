@@ -10,6 +10,7 @@ import type {
   CritiqueItemSummary,
   CritiqueRunDetail,
   CritiqueRunSummary,
+  ConditionAggregate,
   ConditionMeta,
   FileInfo,
   JobFilters,
@@ -20,6 +21,7 @@ import type {
   JobSummary,
   ModelPricing,
   PaginatedResponse,
+  RunRecord,
   TaskDefinitionDetail,
   TaskDefinitionFilters,
   TaskDefinitionSummary,
@@ -72,6 +74,30 @@ export async function fetchConditions(): Promise<ConditionMeta[] | null> {
   }
   if (!response.ok) {
     throw new Error(`Failed to fetch conditions: ${response.statusText}`);
+  }
+  return response.json();
+}
+
+export async function fetchConditionAggregates(): Promise<ConditionAggregate[]> {
+  const response = await fetch(`${API_BASE}/api/condition-aggregates`);
+  if (response.status === 404) {
+    return [];
+  }
+  if (!response.ok) {
+    throw new Error(
+      `Failed to fetch condition aggregates: ${response.statusText}`
+    );
+  }
+  return response.json();
+}
+
+export async function fetchRunRecords(): Promise<RunRecord[]> {
+  const response = await fetch(`${API_BASE}/api/run-records`);
+  if (response.status === 404) {
+    return [];
+  }
+  if (!response.ok) {
+    throw new Error(`Failed to fetch run records: ${response.statusText}`);
   }
   return response.json();
 }

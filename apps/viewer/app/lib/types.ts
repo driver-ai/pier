@@ -413,6 +413,76 @@ export interface ConditionMeta {
   order: number;
 }
 
+// Evidence-mode aggregate/records shapes (Plan 03).
+// Mirror the backend pydantic models in src/pier/viewer/models.py EXACTLY
+// (snake_case). ConditionAggregate keeps `quality` and cost fields NESTED as
+// Stats — pier renders the precomputed aggregate and never re-rolls up
+// (DEC-014 D4).
+
+export interface Stat {
+  mean: number;
+  median: number;
+  std: number;
+  n: number;
+  min: number;
+  max: number;
+}
+
+export interface ConditionAggregate {
+  condition: string;
+  model: string;
+  exam_mode: string;
+  quality: Stat | null;
+  ci_low: number | null;
+  ci_high: number | null;
+  lift_vs_b0: number | null;
+  span_pos: number | null;
+  cost_gather: Stat | null;
+  cost_consumer: Stat | null;
+  cost_total: Stat | null;
+  abstain_rate: number;
+  n: number;
+}
+
+export interface ForensicsDisplay {
+  question: string;
+  answer: string | null;
+  expected: string | null;
+  passed: boolean | null;
+}
+
+export interface Forensics {
+  exam_type: string;
+  payload: Record<string, unknown>;
+  display: ForensicsDisplay;
+}
+
+// The single shared RunRecord definition — Plans 04 (task drill) and 06 (grader
+// forensics) import this. Carries `record_id` and nested `forensics` (or null);
+// NOT for cost roll-up.
+export interface RunRecord {
+  record_id: string;
+  run_id: string;
+  item_id: string;
+  condition: string;
+  model: string;
+  exam_mode: string;
+  seed: number | null;
+  score: number | null;
+  abstained: boolean;
+  exam_type: string | null;
+  cost_gather_usd: number | null;
+  cost_consumer_usd: number | null;
+  tokens_gather: number | null;
+  tokens_consumer: number | null;
+  n_required: number | null;
+  n_covered: number | null;
+  coverage: number | null;
+  producer_trajectory_ref: string | null;
+  consumer_trajectory_ref: string;
+  forensics: Forensics | null;
+}
+
 export interface ModelPricing {
   model_name: string;
   input_cost_per_token: number | null;
