@@ -17,15 +17,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { cn } from "~/lib/utils";
 import type { Trajectory as ApiTrajectory } from "~/lib/types";
-import { adaptTrajectory } from "./adapter";
+import { adaptEnvelope } from "./adapter";
 import { groupSteps, type GroupedTrajectory } from "./group";
 import { StepRow } from "./StepRow";
 import { TrajectoryImageProvider, type TrajectoryImageContext } from "./TrajectoryImage";
-import type { ResolvedToolResult, ViewStep, ViewTrajectory } from "./types";
+import type { EnrichedTrajectoryEnvelope, ResolvedToolResult, ViewStep, ViewTrajectory } from "./types";
 
 export interface TrajectoryViewerProps {
-  /** Either a raw ATIF (pier API shape) or a pre-adapted view one. */
-  trajectory: ApiTrajectory | ViewTrajectory;
+  /** A raw ATIF trajectory (pier API shape), a Plan 05 evidence envelope
+   *  (`{trajectory, enrichment, panels}`), or a pre-adapted view one.
+   *  Bare ATIF renders unchanged (fallback); an envelope overlays its
+   *  `enrichment` onto the raw ATIF by turn/call index. */
+  trajectory: ApiTrajectory | EnrichedTrajectoryEnvelope | ViewTrajectory;
   /** Trial coordinates used to fetch inline images. When omitted, image
    *  parts render a `[path]` placeholder. */
   imageContext?: TrajectoryImageContext;
@@ -36,7 +39,12 @@ export interface TrajectoryViewerProps {
 }
 
 function isView(t: TrajectoryViewerProps["trajectory"]): t is ViewTrajectory {
-  return "trajectory" in t && "agent" in t && (t as ViewTrajectory).agent.displayName != null;
+  return (
+    "trajectory" in t &&
+    "agent" in t &&
+    (t as ViewTrajectory).agent != null &&
+    (t as ViewTrajectory).agent.displayName != null
+  );
 }
 
 export function TrajectoryViewer({
@@ -46,7 +54,10 @@ export function TrajectoryViewer({
   className,
 }: TrajectoryViewerProps) {
   const trajectory = useMemo<ViewTrajectory>(
-    () => (isView(input) ? input : adaptTrajectory(input)),
+    // A pre-adapted ViewTrajectory passes through; a bare ATIF or a Plan 05
+    // envelope both flow through `adaptEnvelope` (which overlays enrichment
+    // when present and falls back to raw ATIF otherwise).
+    () => (isView(input) ? input : adaptEnvelope(input)),
     [input],
   );
 

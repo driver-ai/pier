@@ -1,5 +1,12 @@
 export { TrajectoryViewer } from "./TrajectoryViewer";
 export type { TrajectoryViewerProps } from "./TrajectoryViewer";
 export type { TrajectoryImageContext } from "./TrajectoryImage";
-export { adaptTrajectory } from "./adapter";
+export { adaptTrajectory, adaptEnvelope, isEnvelope } from "./adapter";
 export type { ViewTrajectory, ViewStep } from "./types";
+export type {
+  CallEnrichment,
+  StepEnrichment,
+  TrajectoryEnrichment,
+  EnrichmentPanels,
+  EnrichedTrajectoryEnvelope,
+} from "./types";

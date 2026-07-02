@@ -18,7 +18,7 @@ import { Markdown } from "./Markdown";
 import { ToolCallView } from "./ToolCallView";
 import { DisclosureChevron } from "./icons";
 import { TrajectoryImage } from "./TrajectoryImage";
-import type { ResolvedToolResult, ViewStep } from "./types";
+import type { ResolvedToolResult, StepEnrichment, ViewStep } from "./types";
 
 interface StepRowProps {
   step: ViewStep;
@@ -354,6 +354,7 @@ function AssistantStep({
 
   return (
     <div className="min-w-0 px-4 py-1">
+      {step.viewEnrichment && <EnrichmentLanes enrichment={step.viewEnrichment} />}
       {expandedReasoning && <ReasoningBlock text={expandedReasoning} />}
       {step.parts.length > 0 && (
         <div className="flex min-w-0 flex-col gap-1.5 py-1 text-sm leading-relaxed">
@@ -376,6 +377,57 @@ function AssistantStep({
       )}
       <OrphanResultsBlock results={orphanResults} />
     </div>
+  );
+}
+
+/**
+ * Per-turn Plan 05 enrichment overlay — a compact token vector plus the
+ * attribution lanes. Rendered only when the turn carries a `viewEnrichment`
+ * sidecar; absent overlay leaves the turn rendering exactly as raw ATIF.
+ *
+ * Field names are byte-exact per Plan 05. The token vector reads
+ * `input_new / input_cached / cache_write / output / context_size`; the
+ * attribution lanes read `output_attributed / base_unattributed`.
+ */
+function EnrichmentLanes({ enrichment }: { enrichment: StepEnrichment }) {
+  const vector: Array<{ k: string; v?: number }> = [
+    { k: "in", v: enrichment.input_new },
+    { k: "cached", v: enrichment.input_cached },
+    { k: "cache wr", v: enrichment.cache_write },
+    { k: "out", v: enrichment.output },
+    { k: "ctx", v: enrichment.context_size },
+  ];
+  const lanes: Array<{ k: string; v?: number }> = [
+    { k: "attributed", v: enrichment.output_attributed },
+    { k: "base", v: enrichment.base_unattributed },
+  ];
+  const shownVector = vector.filter((f) => f.v != null);
+  const shownLanes = lanes.filter((f) => f.v != null);
+  if (shownVector.length === 0 && shownLanes.length === 0) return null;
+
+  return (
+    <div className="my-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[10.5px] leading-tight text-muted-foreground">
+      {shownVector.map((f) => (
+        <Figure key={f.k} k={f.k} v={shortNum(f.v!)} />
+      ))}
+      {shownLanes.length > 0 && shownVector.length > 0 && (
+        <span aria-hidden="true" className="text-muted-foreground/40">
+          ·
+        </span>
+      )}
+      {shownLanes.map((f) => (
+        <Figure key={f.k} k={f.k} v={shortNum(f.v!)} accent />
+      ))}
+    </div>
+  );
+}
+
+function Figure({ k, v, accent }: { k: string; v: string; accent?: boolean }) {
+  return (
+    <span className="inline-flex items-baseline gap-1 tabular-nums">
+      <span className="uppercase tracking-wider text-muted-foreground/70">{k}</span>
+      <span className={cn(accent ? "text-primary/80" : "text-foreground/80")}>{v}</span>
+    </span>
   );
 }
 
