@@ -332,6 +332,14 @@ export default function Trace() {
                 </Card>
               ) : producerEnvelope ? (
                 <div className="flex flex-col gap-6">
+                  <GatherPanels
+                    panels={producerEnvelope.panels}
+                    calls={
+                      producerEnvelope.enrichment?.steps.flatMap(
+                        (s) => s.calls ?? []
+                      ) ?? []
+                    }
+                  />
                   <Card>
                     <CardHeader>
                       <CardTitle>Producer trajectory</CardTitle>
@@ -340,7 +348,6 @@ export default function Trace() {
                       <TrajectoryViewer trajectory={producerEnvelope} />
                     </CardContent>
                   </Card>
-                  <GatherPanels panels={producerEnvelope.panels} />
                 </div>
               ) : null}
             </TabsContent>
@@ -475,6 +482,14 @@ function GatherTrace({ gatherRef }: { gatherRef: string }) {
         </Empty>
       ) : (
         <div className="flex flex-col gap-6">
+          {envelope?.panels ? (
+            <GatherPanels
+              panels={envelope.panels}
+              calls={
+                envelope.enrichment?.steps.flatMap((s) => s.calls ?? []) ?? []
+              }
+            />
+          ) : null}
           <Card>
             <CardHeader>
               <CardTitle>Gather trajectory</CardTitle>
@@ -489,9 +504,6 @@ function GatherTrace({ gatherRef }: { gatherRef: string }) {
               ) : null}
             </CardContent>
           </Card>
-          {envelope?.panels ? (
-            <GatherPanels panels={envelope.panels} />
-          ) : null}
         </div>
       )}
     </div>

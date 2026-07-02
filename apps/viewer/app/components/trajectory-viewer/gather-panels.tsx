@@ -14,11 +14,12 @@
  * Gather-only: when `panels` is null/undefined (consumer trajectories), the
  * component renders nothing. Every sub-field is tolerated absent.
  */
-import { useState } from "react";
+import { useMemo, useState } from "react";
 
 import { DataQualityBadge } from "~/components/data-quality";
 import { cn } from "~/lib/utils";
 import type {
+  CallEnrichment,
   ChannelMixEntry,
   CoveragePanel,
   EnrichmentPanels,
@@ -205,10 +206,14 @@ function ChannelMixSection({
   channels,
   totalTokens,
   totalCostUsd,
+  calls,
 }: {
   channels: Record<string, ChannelMixEntry>;
   totalTokens?: number | null;
   totalCostUsd?: number | null;
+  /** Per-call enrichment across all turns. When present, each channel row is
+   *  expandable to show its calls grouped by function_name. */
+  calls?: CallEnrichment[] | null;
 }) {
   const entries = Object.entries(channels).sort(
     (a, b) => (b[1].tokens ?? 0) - (a[1].tokens ?? 0)
@@ -228,32 +233,162 @@ function ChannelMixSection({
   ]
     .filter(Boolean)
     .join(" · ");
+  // Only expandable when we were given the per-call data.
+  const expandable = calls != null;
   return (
     <PanelSection title="Channel mix" subtitle={subtitle || undefined}>
       <StackedBar segments={segments} />
       <div className="mt-2 space-y-1">
         {entries.map(([name, e], idx) => (
-          <div
+          <ChannelRow
             key={name}
-            className="flex items-center justify-between gap-2 text-xs border-b border-border py-1 last:border-0"
-          >
-            <div className="flex items-center gap-1.5 min-w-0">
-              <div
-                className="w-2 h-2 rounded-sm shrink-0"
-                style={{ backgroundColor: CHART_COLORS[idx % CHART_COLORS.length] }}
-              />
-              <span className="truncate">{name}</span>
-            </div>
-            <div className="flex items-center gap-3 text-muted-foreground tabular-nums shrink-0">
-              <span>{e.calls ?? 0} calls</span>
-              <span>{fmtInt(e.tokens)} tok</span>
-              <span>{fmtPct(e.pct_tokens)}</span>
-              <span>{fmtUsd(e.cost_usd)}</span>
-            </div>
-          </div>
+            name={name}
+            entry={e}
+            color={CHART_COLORS[idx % CHART_COLORS.length]}
+            calls={
+              expandable
+                ? (calls ?? []).filter((c) => c.channel === name)
+                : null
+            }
+          />
         ))}
       </div>
     </PanelSection>
+  );
+}
+
+interface FunctionGroup {
+  functionName: string;
+  calls: CallEnrichment[];
+  tokens: number;
+  costUsd: number;
+}
+
+/**
+ * One channel-mix row. Mirrors `TierRow`: a clickable disclosure that expands
+ * to show the channel's calls grouped by `function_name`, with each group's
+ * count / summed tokens / summed cost, and the individual calls (path + tokens)
+ * listed underneath so every call is reachable.
+ *
+ * Non-expandable (renders as before) when `calls` is null — i.e. the panel was
+ * rendered without enrichment. A channel with an empty (but non-null) call list
+ * shows a "no call detail" note.
+ */
+function ChannelRow({
+  name,
+  entry,
+  color,
+  calls,
+}: {
+  name: string;
+  entry: ChannelMixEntry;
+  color: string;
+  /** Calls for THIS channel (already filtered). null → not expandable. */
+  calls: CallEnrichment[] | null;
+}) {
+  const [open, setOpen] = useState(false);
+  const expandable = calls != null;
+
+  // Group this channel's calls by function_name, summing tokens/cost, and
+  // rank the groups by call count (then tokens) so the busiest tool leads.
+  const groups: FunctionGroup[] = useMemo(() => {
+    if (calls == null) return [];
+    const byFn = new Map<string, FunctionGroup>();
+    for (const c of calls) {
+      const fn = c.function_name ?? "(unknown)";
+      let g = byFn.get(fn);
+      if (g == null) {
+        g = { functionName: fn, calls: [], tokens: 0, costUsd: 0 };
+        byFn.set(fn, g);
+      }
+      g.calls.push(c);
+      g.tokens += c.obs_tokens ?? 0;
+      g.costUsd += c.cost_usd ?? 0;
+    }
+    return Array.from(byFn.values()).sort(
+      (a, b) => b.calls.length - a.calls.length || b.tokens - a.tokens
+    );
+  }, [calls]);
+
+  const rowContent = (
+    <>
+      <div className="flex items-center gap-1.5 min-w-0">
+        <div
+          className="w-2 h-2 rounded-sm shrink-0"
+          style={{ backgroundColor: color }}
+        />
+        <span className="truncate">{name}</span>
+      </div>
+      <div className="flex items-center gap-3 text-muted-foreground tabular-nums shrink-0">
+        <span>{entry.calls ?? 0} calls</span>
+        <span>{fmtInt(entry.tokens)} tok</span>
+        <span>{fmtPct(entry.pct_tokens)}</span>
+        <span>{fmtUsd(entry.cost_usd)}</span>
+      </div>
+    </>
+  );
+
+  if (!expandable) {
+    return (
+      <div className="flex items-center justify-between gap-2 text-xs border-b border-border py-1 last:border-0">
+        {rowContent}
+      </div>
+    );
+  }
+
+  return (
+    <div className="border-b border-border last:border-0">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center justify-between gap-2 py-1 text-left text-xs cursor-pointer hover:text-foreground"
+      >
+        {rowContent}
+      </button>
+      {open &&
+        (groups.length === 0 ? (
+          <div className="mb-1 ml-3.5 border-l border-border pl-3 text-[11px] text-muted-foreground">
+            No call detail.
+          </div>
+        ) : (
+          <ul className="mb-1 ml-3.5 space-y-1.5 border-l border-border pl-3">
+            {groups.map((g) => (
+              <li key={g.functionName} className="text-[11px]">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-mono break-all">
+                    {g.functionName}
+                    <span className="text-muted-foreground">
+                      {" "}
+                      ×{g.calls.length}
+                    </span>
+                  </span>
+                  <span className="text-muted-foreground tabular-nums shrink-0">
+                    {fmtInt(g.tokens)} tok · {fmtUsd(g.costUsd)}
+                  </span>
+                </div>
+                <ul className="mt-0.5 ml-2 space-y-0.5 border-l border-border/60 pl-2">
+                  {g.calls.map((c, i) => {
+                    const paths = c.paths ?? [];
+                    const label =
+                      paths.length > 0 ? paths.join(", ") : "(no path)";
+                    return (
+                      <li
+                        key={`${g.functionName}-${c.call_index ?? i}`}
+                        className="flex items-center justify-between gap-2 text-muted-foreground"
+                      >
+                        <span className="font-mono break-all">{label}</span>
+                        <span className="tabular-nums shrink-0">
+                          {fmtInt(c.obs_tokens)} tok
+                        </span>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </li>
+            ))}
+          </ul>
+        ))}
+    </div>
   );
 }
 
@@ -436,9 +571,15 @@ function CoverageOffGoldSection({
  */
 export function GatherPanels({
   panels,
+  calls,
   className,
 }: {
   panels?: EnrichmentPanels | null;
+  /** Per-call enrichment (flattened across turns). When provided, the
+   *  channel-mix rows become expandable — click a channel to see its calls
+   *  grouped by function_name. Omit for backward-compatible, non-expandable
+   *  rows. */
+  calls?: CallEnrichment[] | null;
   className?: string;
 }) {
   if (!panels) return null;
@@ -466,6 +607,7 @@ export function GatherPanels({
           channels={channelMix.channels}
           totalTokens={channelMix.total_tokens}
           totalCostUsd={channelMix.total_cost_usd}
+          calls={calls}
         />
       )}
       {hasTiers && tiers != null && <TiersSection tiers={tiers} />}
