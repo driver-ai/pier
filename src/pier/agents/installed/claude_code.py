@@ -132,21 +132,19 @@ class ClaudeCode(BaseInstalledAgent):
         memory_dir: str | None = None,
         agents: dict[str, str] | None = None,
         seed_session_dir: str | None = None,
-        tool_allowlist: list[str] | None = None,
+        permission_allow: list[str] | None = None,
         *args,
         **kwargs,
     ):
         self.memory_dir = memory_dir
         self.agents = agents
         self.seed_session_dir = seed_session_dir
-        # Deny-by-default allowlist (driver-bench Plan 10 / DEC-083): when set, a PreToolUse
-        # hook permits ONLY these tool names and denies everything else — including tools NOT
-        # in any --disallowedTools denylist and tools added by future Claude Code versions.
-        # Under --permission-mode=bypassPermissions the allowlist flag is a no-op and only a
-        # denylist enforces (the gap that let `Workflow` through, INS-045); a PreToolUse hook,
-        # by contrast, fires regardless of permission mode and is deny-by-default. None ⇒ no
-        # hook emitted (byte-identical legacy behavior).
-        self.tool_allowlist = tuple(tool_allowlist) if tool_allowlist else None
+        # Optional allow-list. When set, the agent runs under Claude Code's deny-by-default
+        # permission mode (``dontAsk``) with settings.json ``permissions.allow`` = these tools, so
+        # any tool not listed is denied. When None, the default ``bypassPermissions`` mode is used
+        # and no settings.json is written. Combine with ``disallowed_tools`` to also drop tools
+        # from the registry.
+        self.permission_allow = tuple(permission_allow) if permission_allow else None
         super().__init__(logs_dir, *args, **kwargs)
 
     def get_version_command(self) -> str | None:
@@ -1417,72 +1415,27 @@ class ClaudeCode(BaseInstalledAgent):
         return setup_command
 
     def _build_register_settings_command(self) -> str | None:
-        """Write a deny-by-default allowlist into ``$CLAUDE_CONFIG_DIR/settings.json`` + a
-        PreToolUse hook script (driver-bench Plan 10 / DEC-083 / INS-045).
+        """Return a shell command that writes a deny-by-default permission config to
+        ``$CLAUDE_CONFIG_DIR/settings.json``, or ``None`` when no ``permission_allow`` is set.
 
-        Returns ``None`` when no ``tool_allowlist`` is declared (byte-identical legacy behavior).
-        Otherwise emits a shell command that base64-decodes a python3 ``PreToolUse`` hook and a
-        ``settings.json`` wiring it for every tool (``matcher: "*"``). The hook permits ONLY the
-        allowlisted tools and DENIES everything else — the future-proof primary lock that a
-        ``--disallowedTools`` denylist cannot be (a denylist is allow-by-default, so an
-        unenumerated/new tool like ``Workflow`` slips through under bypassPermissions; the hook
-        is deny-by-default and fires regardless of permission mode). base64 sidesteps all
-        shell/JSON/python quoting in the unquoted ``sh -c`` interpolation (INS-029). The hook
-        fails CLOSED (denies) on unreadable stdin.
+        The settings set ``permissions.defaultMode = "dontAsk"`` and ``permissions.allow`` to the
+        declared tools, so Claude Code denies any tool not listed. Pairs with
+        ``--permission-mode=dontAsk`` in ``run``. base64 avoids shell/JSON quoting issues in the
+        unquoted ``sh -c`` interpolation.
         """
-        if not self.tool_allowlist:
+        if not self.permission_allow:
             return None
         import base64
         import json
 
-        allow = sorted(self.tool_allowlist)
-        hook_py = (
-            "#!/usr/bin/env python3\n"
-            '"""Deny-by-default PreToolUse allowlist hook (driver-bench DEC-083 / INS-045).\n'
-            "Permits ONLY the allowlisted tools; denies everything else (incl. tools not in any\n"
-            "denylist + future Claude Code tools). Fires under bypassPermissions. Fails CLOSED.\"\"\"\n"
-            "import json, sys\n"
-            f"ALLOW = {set(allow)!r}\n"
-            "try:\n"
-            "    payload = json.load(sys.stdin)\n"
-            "except Exception:\n"
-            "    payload = {}\n"
-            'tool = payload.get("tool_name") or ""\n'
-            "if tool in ALLOW:\n"
-            "    sys.exit(0)\n"
-            "sys.stdout.write(json.dumps({\n"
-            '    "hookSpecificOutput": {\n'
-            '        "hookEventName": "PreToolUse",\n'
-            '        "permissionDecision": "deny",\n'
-            '        "permissionDecisionReason": "sealed-sandbox allowlist (DEC-083): only "\n'
-            '        + ", ".join(sorted(ALLOW)) + " permitted; \'" + str(tool) + "\' denied",\n'
-            "    }\n"
-            "}))\n"
-            "sys.exit(0)\n"
-        )
         settings = {
-            "hooks": {
-                "PreToolUse": [
-                    {
-                        "matcher": "*",
-                        "hooks": [
-                            {
-                                "type": "command",
-                                "command": "python3 $CLAUDE_CONFIG_DIR/hooks/allowlist.py",
-                                "timeout": 10,
-                            }
-                        ],
-                    }
-                ]
+            "permissions": {
+                "defaultMode": "dontAsk",
+                "allow": sorted(self.permission_allow),
             }
         }
-        hook_b64 = base64.b64encode(hook_py.encode()).decode()
         settings_b64 = base64.b64encode(json.dumps(settings).encode()).decode()
-        return (
-            "mkdir -p $CLAUDE_CONFIG_DIR/hooks && "
-            f"printf %s {hook_b64} | base64 -d > $CLAUDE_CONFIG_DIR/hooks/allowlist.py && "
-            f"printf %s {settings_b64} | base64 -d > $CLAUDE_CONFIG_DIR/settings.json"
-        )
+        return f"printf %s {settings_b64} | base64 -d > $CLAUDE_CONFIG_DIR/settings.json"
 
     def _build_register_skills_command(self) -> str | None:
         """Return a shell command that copies skills from the environment to Claude's config.
@@ -1706,7 +1659,8 @@ class ClaudeCode(BaseInstalledAgent):
         # Disable non-essential traffic (telemetry, etc.)
         env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
 
-        # Allow bypassPermissions mode when running as root inside containers
+        # Allow a non-interactive permission mode (bypassPermissions / dontAsk) when running as
+        # root inside containers.
         env["IS_SANDBOX"] = "1"
 
         # Merge declarative env vars (e.g. MAX_THINKING_TOKENS)
@@ -1723,6 +1677,10 @@ class ClaudeCode(BaseInstalledAgent):
 
         cli_flags = self.build_cli_flags()
         extra_flags = (cli_flags + " ") if cli_flags else ""
+
+        # Deny-by-default when an allow-list is declared (see _build_register_settings_command);
+        # otherwise the default allow-by-default mode.
+        permission_mode = "dontAsk" if self.permission_allow else "bypassPermissions"
 
         await self.exec_as_agent(
             environment,
@@ -1751,7 +1709,7 @@ class ClaudeCode(BaseInstalledAgent):
             command=(
                 'export PATH="$HOME/.local/bin:$PATH"; '
                 f"claude --verbose --output-format=stream-json "
-                f"--permission-mode=bypassPermissions "
+                f"--permission-mode={permission_mode} "
                 f"{extra_flags}"
                 f"--print < {shlex.quote(prompt_path)} 2>&1 | tee "
                 f"/logs/agent/claude-code.txt"
