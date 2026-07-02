@@ -17,6 +17,7 @@ export default [
     "jobs/:jobName/tasks/:source/:agent/:modelProvider/:modelName/:taskName/trials/:trialName",
     "routes/trial.tsx"
   ),
+  route("method", "routes/method.tsx"),
   route("task-definitions", "routes/task-definitions.tsx"),
   route("task-definitions/:taskName", "routes/task-definition.tsx"),
   route("prototypes/chart-toolbar", "routes/chart-toolbar-prototypes.tsx"),
