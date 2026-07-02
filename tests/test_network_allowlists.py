@@ -4,6 +4,7 @@ from pier.agents.installed.codex import Codex
 from pier.agents.installed.gemini_cli import GeminiCli
 from pier.agents.installed.mini_swe_agent import MiniSweAgent
 from pier.agents.installed.opencode import OpenCode
+from pier.models.task.config import MCPServerConfig
 
 
 def domains(agent) -> set[str]:
@@ -104,3 +105,19 @@ model:
     )
 
     assert {"api.openai.com", "gateway.example.com"} <= domains(agent)
+
+
+def test_codex_reports_mcp_server_hosts(tmp_path: Path):
+    agent = Codex(
+        logs_dir=tmp_path,
+        model_name="gpt-5.5",
+        mcp_servers=[
+            MCPServerConfig(
+                name="driver",
+                transport="streamable-http",
+                url="https://mcp.driverai.com/v1/sse",
+            )
+        ],
+    )
+
+    assert "mcp.driverai.com" in domains(agent)

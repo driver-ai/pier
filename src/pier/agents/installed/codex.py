@@ -110,6 +110,10 @@ class Codex(BaseInstalledAgent):
                 parsed = {}
             urls.extend(collect_url_values(parsed))
 
+        # Reach any MCP servers configured for this run. No-op without MCP, so runs
+        # without MCP stay byte-identical to upstream.
+        urls.extend(server.url for server in self.mcp_servers if server.url)
+
         return allowlist_from_urls(urls, default_domains=["api.openai.com"])
 
     def install_spec(self) -> AgentInstallSpec:
