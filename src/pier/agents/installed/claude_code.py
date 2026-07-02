@@ -32,7 +32,6 @@ from pier.models.trajectories import (
     Trajectory,
 )
 from pier.models.trial.paths import EnvironmentPaths
-from pier.utils.env import capture_strace_enabled
 from pier.utils.trajectory_metrics import (
     extra_with_context_metrics,
     peak_context_tokens_from_steps,
@@ -239,15 +238,15 @@ class ClaudeCode(BaseInstalledAgent):
             else:
                 domains = ["api.anthropic.com"]
 
-        # Capture's driver condition needs Driver MCP reachable under network
-        # isolation. Gated on capture so non-capture runs stay byte-identical
-        # (DEC-030). hostname_from_url is the canonical parser — it guards
-        # env-templates (${VAR}/{env:...}) and normalizes case/trailing dot.
-        if capture_strace_enabled():
-            for server in self.mcp_servers:
-                host = hostname_from_url(server.url)
-                if host and host not in domains:
-                    domains.append(host)
+        # Allowlist any MCP servers configured for this run so the agent can reach
+        # them under network isolation. A no-op when none are configured, so runs
+        # without MCP stay byte-identical to upstream. hostname_from_url is the
+        # canonical parser: it guards env-templates (${VAR}/{env:...}) and normalizes
+        # case/trailing dot.
+        for server in self.mcp_servers:
+            host = hostname_from_url(server.url)
+            if host and host not in domains:
+                domains.append(host)
 
         return NetworkAllowlist(domains=domains)
 
