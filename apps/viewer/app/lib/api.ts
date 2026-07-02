@@ -33,6 +33,7 @@ import type {
   TrialSummary,
   VerifierOutput,
 } from "./types";
+import type { EnrichedTrajectoryEnvelope } from "~/components/trajectory-viewer";
 
 // In production (served from same origin): use relative URL
 // In dev: use VITE_API_URL environment variable
@@ -88,6 +89,33 @@ export async function fetchConditionAggregates(): Promise<ConditionAggregate[]> 
       `Failed to fetch condition aggregates: ${response.statusText}`
     );
   }
+  return response.json();
+}
+
+/**
+ * Enriched-trajectory evidence envelope for one run record + producer/consumer
+ * kind (Plan 06, Task 2 endpoint). Returns:
+ *   - the `{trajectory, enrichment, panels}` envelope on 200 with a body,
+ *   - `null` on 200 with a null body — the producer trajectory does not exist
+ *     for this record (b0 / oracle producers have no gather trajectory),
+ *   - throws on 500 — a dangling sidecar reference (the ref points at a
+ *     trajectory that is missing). Callers distinguish this from the null case
+ *     via the thrown error, so the trace view can show an explicit error state.
+ */
+export async function fetchEnrichedTrajectory(
+  recordId: string,
+  kind: "consumer" | "producer"
+): Promise<EnrichedTrajectoryEnvelope | null> {
+  const params = new URLSearchParams({ record_id: recordId, kind });
+  const response = await fetch(
+    `${API_BASE}/api/evidence/trajectory?${params}`
+  );
+  if (!response.ok) {
+    throw new Error(
+      `Failed to fetch enriched trajectory: ${response.statusText}`
+    );
+  }
+  // A 200 with a null body means "no trajectory for this kind" (not an error).
   return response.json();
 }
 
