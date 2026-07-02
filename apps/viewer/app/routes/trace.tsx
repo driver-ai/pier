@@ -78,15 +78,17 @@ function parseGatherRef(ref: string): {
   condition: string | null;
   seed: string | null;
 } {
-  const base = ref.split("/").pop() ?? ref;
-  const stem = base.replace(/\.[a-z0-9]+$/i, "");
-  const parts = stem.split(/[._-]/).filter(Boolean);
-  const seedMatch = parts.find((p) => /^s?\d+$/.test(p)) ?? null;
-  return {
-    model: parts[0] ?? null,
-    condition: parts[1] ?? null,
-    seed: seedMatch ? seedMatch.replace(/^s/, "") : null,
-  };
+  // ref is the DEC-014 D2 producer ref: `gather:{run_id}:{model}:{condition}:{seed}`
+  // (colon-delimited, byte-identical to what the emitter / `/api/gathers` produce).
+  const parts = ref.split(":");
+  if (parts[0] === "gather" && parts.length >= 5) {
+    return {
+      model: parts[2] ?? null,
+      condition: parts[3] ?? null,
+      seed: parts[4] ?? null,
+    };
+  }
+  return { model: null, condition: null, seed: null };
 }
 
 export default function Trace() {
