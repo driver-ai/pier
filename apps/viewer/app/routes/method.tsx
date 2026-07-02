@@ -1,9 +1,11 @@
 // The Method page explains how the experiment is run: the conditions under
 // test (config-driven via `useConditions`, DEC-009), the two consumer modes,
-// the models swept, the exam types the grader supports, and how abstentions
-// are handled. All non-condition prose is literal (easy to edit later).
+// the models swept (read from the run data, not hardcoded), the exam types the
+// grader supports, and how abstentions are handled. Non-condition/model prose
+// is literal (easy to edit later).
 
 import { useMemo } from "react";
+import { useQuery } from "@tanstack/react-query";
 
 import {
   Breadcrumb,
@@ -13,6 +15,7 @@ import {
 } from "~/components/ui/breadcrumb";
 import { ConditionLabel } from "~/components/condition-label";
 import { useConditions } from "~/lib/conditions";
+import { fetchConditionAggregates } from "~/lib/api";
 
 interface MethodSectionProps {
   title: string;
@@ -66,10 +69,6 @@ const CONSUMER_MODES = [
   },
 ];
 
-// Models — author-supplied prose (NOT read from the data). The frontier sweep
-// runs three Claude models. Edit here if the sweep changes.
-const MODELS = ["Haiku", "Sonnet", "Opus"];
-
 // Exam types the grader supports — literal prose.
 const EXAM_TYPES = [
   "mcq",
@@ -82,6 +81,23 @@ const EXAM_TYPES = [
 
 export default function Method() {
   const { data: conditions, isPending } = useConditions();
+
+  // Models are read from the run data (the distinct model ids in the
+  // aggregates), not hardcoded — so the Method page always reflects the
+  // actual sweep. Shares the ["conditionAggregates"] query cache with /evidence.
+  const { data: aggregates, isPending: modelsPending } = useQuery({
+    queryKey: ["conditionAggregates"],
+    queryFn: fetchConditionAggregates,
+    staleTime: Infinity,
+  });
+
+  const models = useMemo(
+    () =>
+      aggregates
+        ? [...new Set(aggregates.map((a) => a.model))].sort()
+        : [],
+    [aggregates]
+  );
 
   // Sort a copy by `order` (config-driven); never mutate the query cache.
   const sortedConditions = useMemo(
@@ -147,13 +163,21 @@ export default function Method() {
 
       <MethodSection
         title="Models"
-        description="The frontier sweep runs three Claude models."
+        description="The models swept in this run, read from the run data."
       >
-        <ul className="flex flex-col gap-1 text-sm">
-          {MODELS.map((model) => (
-            <li key={model}>{model}</li>
-          ))}
-        </ul>
+        {modelsPending ? (
+          <p className="text-sm text-muted-foreground">Loading models…</p>
+        ) : models.length > 0 ? (
+          <ul className="flex flex-col gap-1 text-sm font-mono">
+            {models.map((model) => (
+              <li key={model}>{model}</li>
+            ))}
+          </ul>
+        ) : (
+          <p className="text-sm text-muted-foreground">
+            Model list is unavailable for this run.
+          </p>
+        )}
       </MethodSection>
 
       <MethodSection
