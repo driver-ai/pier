@@ -10,6 +10,7 @@ import type {
   CritiqueItemSummary,
   CritiqueRunDetail,
   CritiqueRunSummary,
+  ConditionMeta,
   FileInfo,
   JobFilters,
   JobHeatmapColumnBy,
@@ -37,7 +38,7 @@ const API_BASE = import.meta.env.VITE_API_URL ?? "";
 
 export interface ViewerConfig {
   folder: string;
-  mode: "jobs" | "tasks";
+  mode: "jobs" | "tasks" | "evidence";
   /** @deprecated Use folder instead */
   jobs_dir?: string;
 }
@@ -60,6 +61,17 @@ export async function fetchModelPricing(
   }
   if (!response.ok) {
     throw new Error(`Failed to fetch pricing: ${response.statusText}`);
+  }
+  return response.json();
+}
+
+export async function fetchConditions(): Promise<ConditionMeta[] | null> {
+  const response = await fetch(`${API_BASE}/api/conditions`);
+  if (response.status === 404) {
+    return null;
+  }
+  if (!response.ok) {
+    throw new Error(`Failed to fetch conditions: ${response.statusText}`);
   }
   return response.json();
 }

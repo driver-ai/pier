@@ -404,6 +404,15 @@ export interface FileInfo {
   size: number | null;
 }
 
+export interface ConditionMeta {
+  id: string;
+  label: string;
+  description: string;
+  is_rail: boolean;
+  role: string;
+  order: number;
+}
+
 export interface ModelPricing {
   model_name: string;
   input_cost_per_token: number | null;
