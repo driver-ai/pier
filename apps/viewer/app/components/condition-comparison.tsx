@@ -16,6 +16,7 @@
 
 import { useMemo, useState } from "react";
 import { Search } from "lucide-react";
+import { useNavigate } from "react-router";
 
 import {
   ChartToolbar,
@@ -172,6 +173,7 @@ export function ConditionComparison({
   isLoading,
   isFetching,
 }: ConditionComparisonProps) {
+  const navigate = useNavigate();
   const [view, setView] = useState<ChangeView>(DEFAULT_CHANGE_VIEW);
   const [uncontrolledExamMode, setUncontrolledExamMode] = useState<
     string | null
@@ -194,6 +196,20 @@ export function ConditionComparison({
   // the first available (folds consumer mode in as a dimension; DEC-012).
   const activeMode =
     examMode && modes.includes(examMode) ? examMode : (modes[0] ?? null);
+
+  // Clicking a condition × model bar drills to the task list scoped by
+  // `{model, exam_mode}` (the RESOLVED active consumer mode) with the clicked
+  // condition carried as a highlight param, not a filter (DEC-014 D2). No-op
+  // when no mode is resolved (nothing to scope by).
+  const handleCellClick = (model: string, condition: string) => {
+    if (!activeMode) return;
+    const params = new URLSearchParams({
+      model,
+      exam_mode: activeMode,
+      condition,
+    });
+    navigate(`/tasks?${params.toString()}`);
+  };
 
   const shape = useMemo(() => {
     if (!aggregates || aggregates.length === 0) return null;
@@ -281,6 +297,7 @@ export function ConditionComparison({
             viewMeta={viewMeta}
             hovered={hovered}
             setHovered={setHovered}
+            onCellClick={handleCellClick}
           />
         ))}
       </div>
@@ -298,12 +315,15 @@ function ModelRow({
   viewMeta,
   hovered,
   setHovered,
+  onCellClick,
 }: {
   model: string;
   bars: ComparisonBar[];
   viewMeta: ViewMeta;
   hovered: string | null;
   setHovered: (k: string | null) => void;
+  /** Drill into the task list scoped by this model + the clicked condition. */
+  onCellClick: (model: string, condition: string) => void;
 }) {
   const bare = bareModelName(model);
   const family = getFamily(null, model);
@@ -402,6 +422,10 @@ function ModelRow({
                       setHovered(`${model}::${bar.condition}`)
                     }
                     onMouseLeave={() => setHovered(null)}
+                    onClick={() => onCellClick(model, bar.condition)}
+                    role="button"
+                    aria-label={`${bareModelName(model)} · ${bar.label}: drill to tasks`}
+                    style={{ cursor: "pointer" }}
                   >
                     <rect
                       x={barX}
@@ -443,7 +467,20 @@ function ModelRow({
                   key={bar.condition}
                   onMouseEnter={() => setHovered(`${model}::${bar.condition}`)}
                   onMouseLeave={() => setHovered(null)}
+                  onClick={() => onCellClick(model, bar.condition)}
+                  role="button"
+                  aria-label={`${bare} · ${bar.label}: drill to tasks`}
+                  style={{ cursor: "pointer" }}
                 >
+                  {/* Full-height hit target so the whole column slot is clickable. */}
+                  <rect
+                    x={barX}
+                    y={plotTop}
+                    width={barW}
+                    height={ROW_H}
+                    fill="transparent"
+                    pointerEvents="all"
+                  />
                   <rect
                     x={barX}
                     y={barTop}
