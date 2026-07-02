@@ -300,13 +300,14 @@ def _register_evidence_endpoints(app: FastAPI, run_dir: Path) -> None:
     def get_conditions() -> list[ConditionMeta]:
         """Return the run's condition metadata from conditions.json.
 
-        Malformed conditions.json collapses to the absent path (``_read_json_file``
-        returns ``None``), so it surfaces as 404 rather than 500.
+        The sidecar is the emitted envelope ``{"run_id": ..., "conditions": [...]}``
+        (matching run_records/condition_aggregates). Absent, malformed, non-dict,
+        or missing-key collapses to 404 (never 500), mirroring the other endpoints.
         """
         data = _read_json_file(run_dir / "conditions.json")
-        if data is None:
+        if not isinstance(data, dict) or "conditions" not in data:
             raise HTTPException(status_code=404, detail="conditions.json not found")
-        return [ConditionMeta.model_validate(c) for c in data]
+        return [ConditionMeta.model_validate(c) for c in data["conditions"]]
 
     @app.get(
         "/api/condition-aggregates", response_model=list[ConditionAggregate]

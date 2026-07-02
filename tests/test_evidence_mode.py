@@ -62,10 +62,20 @@ SIX_CONDITIONS = [
 
 
 def _make_evidence_dir(root: Path) -> Path:
-    """Create a flat sidecar evidence layout at the root."""
-    (root / "conditions.json").write_text(json.dumps(SIX_CONDITIONS))
-    (root / "run_records.json").write_text(json.dumps([]))
-    (root / "condition_aggregates.json").write_text(json.dumps({}))
+    """Create a flat sidecar evidence layout at the root.
+
+    Sidecars use the emitted envelope shape ``{"run_id", "conditions"|"records"|
+    "aggregates": [...]}`` — matching pier-analytics' actual emit (not a bare list).
+    """
+    (root / "conditions.json").write_text(
+        json.dumps({"run_id": "test-run", "conditions": SIX_CONDITIONS})
+    )
+    (root / "run_records.json").write_text(
+        json.dumps({"run_id": "test-run", "records": []})
+    )
+    (root / "condition_aggregates.json").write_text(
+        json.dumps({"run_id": "test-run", "aggregates": []})
+    )
     (root / "traces").mkdir()
     return root
 
