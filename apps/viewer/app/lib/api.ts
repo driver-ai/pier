@@ -10,7 +10,11 @@ import type {
   CritiqueItemSummary,
   CritiqueRunDetail,
   CritiqueRunSummary,
+  ConditionAggregate,
+  ConditionMeta,
+  DataNote,
   FileInfo,
+  GatherSummary,
   JobFilters,
   JobHeatmapColumnBy,
   JobHeatmapData,
@@ -19,6 +23,7 @@ import type {
   JobSummary,
   ModelPricing,
   PaginatedResponse,
+  RunRecord,
   TaskDefinitionDetail,
   TaskDefinitionFilters,
   TaskDefinitionSummary,
@@ -30,6 +35,7 @@ import type {
   TrialSummary,
   VerifierOutput,
 } from "./types";
+import type { EnrichedTrajectoryEnvelope } from "~/components/trajectory-viewer";
 
 // In production (served from same origin): use relative URL
 // In dev: use VITE_API_URL environment variable
@@ -37,7 +43,7 @@ const API_BASE = import.meta.env.VITE_API_URL ?? "";
 
 export interface ViewerConfig {
   folder: string;
-  mode: "jobs" | "tasks";
+  mode: "jobs" | "tasks" | "evidence";
   /** @deprecated Use folder instead */
   jobs_dir?: string;
 }
@@ -60,6 +66,117 @@ export async function fetchModelPricing(
   }
   if (!response.ok) {
     throw new Error(`Failed to fetch pricing: ${response.statusText}`);
+  }
+  return response.json();
+}
+
+export async function fetchConditions(): Promise<ConditionMeta[] | null> {
+  const response = await fetch(`${API_BASE}/api/conditions`);
+  if (response.status === 404) {
+    return null;
+  }
+  if (!response.ok) {
+    throw new Error(`Failed to fetch conditions: ${response.statusText}`);
+  }
+  return response.json();
+}
+
+export async function fetchDataNotes(): Promise<DataNote[]> {
+  const response = await fetch(`${API_BASE}/api/data-notes`);
+  if (response.status === 404) {
+    return [];
+  }
+  if (!response.ok) {
+    throw new Error(`Failed to fetch data notes: ${response.statusText}`);
+  }
+  return response.json();
+}
+
+export async function fetchConditionAggregates(): Promise<ConditionAggregate[]> {
+  const response = await fetch(`${API_BASE}/api/condition-aggregates`);
+  if (response.status === 404) {
+    return [];
+  }
+  if (!response.ok) {
+    throw new Error(
+      `Failed to fetch condition aggregates: ${response.statusText}`
+    );
+  }
+  return response.json();
+}
+
+/**
+ * Enriched-trajectory evidence envelope for one run record + producer/consumer
+ * kind (Plan 06, Task 2 endpoint). Returns:
+ *   - the `{trajectory, enrichment, panels}` envelope on 200 with a body,
+ *   - `null` on 200 with a null body — the producer trajectory does not exist
+ *     for this record (b0 / oracle producers have no gather trajectory),
+ *   - throws on 500 — a dangling sidecar reference (the ref points at a
+ *     trajectory that is missing). Callers distinguish this from the null case
+ *     via the thrown error, so the trace view can show an explicit error state.
+ */
+export async function fetchEnrichedTrajectory(
+  recordId: string,
+  kind: "consumer" | "producer"
+): Promise<EnrichedTrajectoryEnvelope | null> {
+  const params = new URLSearchParams({ record_id: recordId, kind });
+  const response = await fetch(
+    `${API_BASE}/api/evidence/trajectory?${params}`
+  );
+  if (!response.ok) {
+    throw new Error(
+      `Failed to fetch enriched trajectory: ${response.statusText}`
+    );
+  }
+  // A 200 with a null body means "no trajectory for this kind" (not an error).
+  return response.json();
+}
+
+/**
+ * Standalone gather (producer) trajectory summaries (Trajectories browser).
+ * Returns the list on 200; `[]` on 404 — the run has no gathers sidecar
+ * (mirrors `fetchRunRecords` / the 404 → [] idiom).
+ */
+export async function fetchGathers(): Promise<GatherSummary[]> {
+  const response = await fetch(`${API_BASE}/api/gathers`);
+  if (response.status === 404) {
+    return [];
+  }
+  if (!response.ok) {
+    throw new Error(`Failed to fetch gathers: ${response.statusText}`);
+  }
+  return response.json();
+}
+
+/**
+ * The enriched-trajectory envelope for one standalone gather, addressed by its
+ * `ref` (Trajectories browser gather view). Mirrors `fetchEnrichedTrajectory`:
+ * throws on a non-OK response — a dangling ref yields HTTP 500, which callers
+ * surface as an explicit error state. Returns the `{trajectory, enrichment,
+ * panels}` envelope on 200.
+ */
+export async function fetchTrajectoryByRef(
+  ref: string
+): Promise<EnrichedTrajectoryEnvelope> {
+  const params = new URLSearchParams({ ref });
+  const response = await fetch(
+    `${API_BASE}/api/evidence/trajectory?${params}`
+  );
+  if (!response.ok) {
+    throw new Error(
+      `Failed to fetch gather trajectory: ${response.statusText}`
+    );
+  }
+  return response.json();
+}
+
+export async function fetchRunRecords(): Promise<RunRecord[]> {
+  const response = await fetch(`${API_BASE}/api/run-records`);
+  if (response.status === 404) {
+    return [];
+  }
+  if (!response.ok) {
+    throw new Error(`Failed to fetch run records: ${response.statusText}`);
   }
   return response.json();
 }

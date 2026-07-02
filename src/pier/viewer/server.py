@@ -24,6 +24,8 @@ from pier.models.job.config import (
 from pier.models.job.result import JobStats
 from pier.models.trial.result import TrialResult
 from pier.viewer.models import (
+    ConditionAggregate,
+    ConditionMeta,
     CritiqueHeatmapCell,
     CritiqueHeatmapColumn,
     CritiqueHeatmapData,
@@ -32,9 +34,11 @@ from pier.viewer.models import (
     CritiqueItemSummary,
     CritiqueRunDetail,
     CritiqueRunSummary,
+    DataNote,
     EvalSummary,
     FileInfo,
     FilterOption,
+    GatherSummary,
     JobFilters,
     JobHeatmapCell,
     JobHeatmapColumn,
@@ -48,6 +52,7 @@ from pier.viewer.models import (
     TaskDefinitionFilters,
     TaskDefinitionSummary,
     TaskFilters,
+    RunRecord,
     TaskSummary,
     TrialCritiqueDetail,
     TrialSummary,
@@ -245,7 +250,9 @@ def create_app(
             output_cost_per_token=output_rate,
         )
 
-    if mode == "tasks":
+    if mode == "evidence":
+        _register_evidence_endpoints(app, folder)
+    elif mode == "tasks":
         _register_task_endpoints(app, folder, cleanup_callbacks)
     else:
         _register_job_endpoints(app, folder)
@@ -273,6 +280,288 @@ def create_app(
             return FileResponse(static_dir / "index.html")
 
     return app
+
+
+def _register_evidence_endpoints(app: FastAPI, run_dir: Path) -> None:
+    """Register API endpoints for the flat sidecar evidence layout (DEC-014 D1).
+
+    Endpoints are registered inside this closure over the run root so they can
+    locate the sidecars. Plan 03 adds /api/condition-aggregates and
+    /api/run-records inside this same closure.
+    """
+
+    def _read_json_file(path: Path) -> Any | None:
+        if not path.exists() or not path.is_file():
+            return None
+        try:
+            return json.loads(path.read_text())
+        except Exception:
+            return None
+
+    @app.get("/api/conditions", response_model=list[ConditionMeta])
+    def get_conditions() -> list[ConditionMeta]:
+        """Return the run's condition metadata from conditions.json.
+
+        The sidecar is the emitted envelope ``{"run_id": ..., "conditions": [...]}``
+        (matching run_records/condition_aggregates). Absent, malformed, non-dict,
+        or missing-key collapses to 404 (never 500), mirroring the other endpoints.
+        """
+        data = _read_json_file(run_dir / "conditions.json")
+        if not isinstance(data, dict) or "conditions" not in data:
+            raise HTTPException(status_code=404, detail="conditions.json not found")
+        return [ConditionMeta.model_validate(c) for c in data["conditions"]]
+
+    @app.get(
+        "/api/condition-aggregates", response_model=list[ConditionAggregate]
+    )
+    def get_condition_aggregates() -> list[ConditionAggregate]:
+        """Return the run's precomputed per-condition aggregates.
+
+        Passthrough of the ``condition_aggregates.json`` sidecar's inner
+        ``aggregates`` list (the ``{run_id, aggregates}`` envelope; DEC-014 D4) —
+        pier renders the precomputed rollup and never re-aggregates. An absent /
+        malformed sidecar, or one lacking the inner key, surfaces as 404 (never
+        500), mirroring ``get_conditions``.
+        """
+        data = _read_json_file(run_dir / "condition_aggregates.json")
+        if not isinstance(data, dict) or "aggregates" not in data:
+            raise HTTPException(
+                status_code=404, detail="condition_aggregates.json not found"
+            )
+        return [ConditionAggregate.model_validate(a) for a in data["aggregates"]]
+
+    @app.get("/api/run-records", response_model=list[RunRecord])
+    def get_run_records() -> list[RunRecord]:
+        """Return the run's per-trial join records.
+
+        Passthrough of the ``run_records.json`` sidecar's inner ``records`` list
+        (the ``{run_id, records}`` envelope; DEC-014 D2). Each record carries its
+        ``record_id`` for the task drill (Plan 04) + grader forensics (Plan 06),
+        NOT for cost roll-up. An absent / malformed sidecar, or one lacking the
+        inner key, surfaces as 404 (never 500), mirroring ``get_conditions``.
+        """
+        data = _read_json_file(run_dir / "run_records.json")
+        if not isinstance(data, dict) or "records" not in data:
+            raise HTTPException(status_code=404, detail="run_records.json not found")
+        return [RunRecord.model_validate(r) for r in data["records"]]
+
+    @app.get("/api/data-notes", response_model=list[DataNote])
+    def get_data_notes() -> list[DataNote]:
+        """Return the run's active data-quality notes from data_notes.json.
+
+        Passthrough of the ``data_notes.json`` sidecar's inner ``notes`` list
+        (the ``{run_id, notes}`` envelope; Plan 07). Each note declares which
+        metrics it ``affects`` so the UI can badge suspect numbers. An absent /
+        malformed sidecar, or one lacking the inner key, surfaces as 404 (never
+        500), mirroring ``get_conditions``.
+        """
+        data = _read_json_file(run_dir / "data_notes.json")
+        if not isinstance(data, dict) or "notes" not in data:
+            raise HTTPException(status_code=404, detail="data_notes.json not found")
+        return [DataNote.model_validate(n) for n in data["notes"]]
+
+    # Sentinel distinguishing "ref is null / producer absent" (-> null body) from
+    # "ref is non-null but its sidecar could not be resolved" (-> distinct error).
+    _ABSENT = object()
+
+    def _resolve_ref_to_envelope(ref: str) -> Any:
+        """Resolve a NON-NULL trace ref to its Plan 05 sidecar envelope.
+
+        Chain: ``traces/index.json`` (follow ``aliases`` if the ref is an alias
+        key) -> ``refs`` -> sidecar path (relative to ``run_dir/traces``). Shared
+        by the record_id path (record -> ref -> here) and the direct ``?ref=``
+        standalone-gather path.
+
+        Raises:
+            HTTPException 500 (the distinct "partial export" error) when the ref
+              cannot be resolved (missing from the index, or its sidecar file is
+              absent/unreadable) — NOT "no gather".
+        """
+        index = _read_json_file(run_dir / "traces" / "index.json")
+        if not isinstance(index, dict):
+            raise HTTPException(
+                status_code=500,
+                detail="traces/index.json missing or malformed; cannot resolve ref",
+            )
+        refs = index.get("refs")
+        aliases = index.get("aliases") or {}
+        if not isinstance(refs, dict):
+            raise HTTPException(
+                status_code=500,
+                detail="traces/index.json has no 'refs'; cannot resolve ref",
+            )
+
+        # Follow a pts->sealed alias (the gather ref is exam-invariant).
+        resolved_ref = aliases.get(ref, ref) if isinstance(aliases, dict) else ref
+
+        rel_path = refs.get(resolved_ref)
+        if rel_path is None:
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    f"trace ref '{ref}' has no sidecar entry in traces/index.json "
+                    "(dangling ref / partial export)"
+                ),
+            )
+
+        envelope = _read_json_file(run_dir / "traces" / rel_path)
+        if envelope is None:
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    f"sidecar for trace ref '{ref}' is missing or unreadable "
+                    f"({rel_path}); partial export"
+                ),
+            )
+        return envelope
+
+    def _resolve_trace_ref(record_id: str, kind: str) -> Any:
+        """Resolve a trial's Plan 05 envelope sidecar BY REF (DEC-014 D2).
+
+        Maps ``run_records.json[record_id]`` -> the ``{consumer,producer}_
+        trajectory_ref``, then delegates the ref->envelope resolution to
+        ``_resolve_ref_to_envelope`` (shared with the direct ``?ref=`` path).
+
+        Returns:
+            * ``_ABSENT`` when the ref is null (producer absent for b0/oracle) —
+              the endpoint maps this to a null body.
+            * the parsed envelope dict on success.
+
+        Raises:
+            HTTPException 404 when the ``record_id`` is unknown.
+            HTTPException 500 (distinct from the null case) when a NON-NULL ref
+              cannot be resolved (partial export, NOT "no gather").
+        """
+        records_env = _read_json_file(run_dir / "run_records.json")
+        if not isinstance(records_env, dict) or "records" not in records_env:
+            raise HTTPException(status_code=404, detail="run_records.json not found")
+
+        record = next(
+            (
+                r
+                for r in records_env["records"]
+                if isinstance(r, dict) and r.get("record_id") == record_id
+            ),
+            None,
+        )
+        if record is None:
+            raise HTTPException(
+                status_code=404, detail=f"record_id '{record_id}' not found"
+            )
+
+        ref_key = (
+            "producer_trajectory_ref" if kind == "producer" else "consumer_trajectory_ref"
+        )
+        ref = record.get(ref_key)
+        if ref is None:
+            # Null ref: producer absent for b0/oracle (expected) — not an error.
+            return _ABSENT
+
+        return _resolve_ref_to_envelope(ref)
+
+    @app.get("/api/gathers", response_model=list[GatherSummary])
+    def get_gathers() -> list[GatherSummary]:
+        """List the run's distinct gathers for the Trajectories browser.
+
+        Enumerates the ``gather:`` keys in ``traces/index.json`` and, for each,
+        parses ``model``/``condition``/``seed`` positionally from the ref
+        (``gather:{run_id}:{model}:{condition}:{seed}``) and reads
+        ``panels.coverage.mean_coverage`` + ``panels.channel_mix.total_cost_usd``
+        from its sidecar (null-tolerant). A run with no gathers (no traces index,
+        or no ``gather:`` refs) is valid and returns ``[]`` (never 404).
+        """
+        index = _read_json_file(run_dir / "traces" / "index.json")
+        if not isinstance(index, dict):
+            return []
+        refs = index.get("refs")
+        if not isinstance(refs, dict):
+            return []
+
+        summaries: list[GatherSummary] = []
+        for ref in refs:
+            if not isinstance(ref, str) or not ref.startswith("gather:"):
+                continue
+            # gather:{run_id}:{model}:{condition}:{seed} — trailing tokens.
+            parts = ref.split(":")
+            model = parts[2] if len(parts) > 2 else None
+            condition = parts[3] if len(parts) > 3 else None
+            seed: int | None = None
+            if len(parts) > 4:
+                try:
+                    seed = int(parts[4])
+                except ValueError:
+                    seed = None
+
+            mean_coverage: float | None = None
+            cost_usd: float | None = None
+            rel_path = refs.get(ref)
+            envelope = (
+                _read_json_file(run_dir / "traces" / rel_path)
+                if isinstance(rel_path, str)
+                else None
+            )
+            if isinstance(envelope, dict):
+                panels = envelope.get("panels")
+                if isinstance(panels, dict):
+                    coverage = panels.get("coverage")
+                    if isinstance(coverage, dict):
+                        mc = coverage.get("mean_coverage")
+                        if isinstance(mc, int | float) and not isinstance(mc, bool):
+                            mean_coverage = float(mc)
+                    channel_mix = panels.get("channel_mix")
+                    if isinstance(channel_mix, dict):
+                        tc = channel_mix.get("total_cost_usd")
+                        if isinstance(tc, int | float) and not isinstance(tc, bool):
+                            cost_usd = float(tc)
+
+            summaries.append(
+                GatherSummary(
+                    ref=ref,
+                    model=model,
+                    condition=condition,
+                    seed=seed,
+                    mean_coverage=mean_coverage,
+                    cost_usd=cost_usd,
+                )
+            )
+        return summaries
+
+    @app.get("/api/evidence/trajectory")
+    def get_enriched_trajectory(
+        record_id: str | None = None,
+        kind: str = "consumer",
+        ref: str | None = None,
+    ) -> dict | None:
+        """Return the Plan 05 enriched-trajectory envelope, by record or by ref.
+
+        Two resolution paths share the same ref->sidecar resolver
+        (``_resolve_ref_to_envelope``); separate from pier's job/trial
+        ``get_trajectory`` route, which is left untouched.
+
+        * ``ref`` given: resolve it DIRECTLY (honoring ``aliases``) -> sidecar
+          envelope. This is the standalone-gather view — no run_records join row
+          is needed. A dangling ref -> the same distinct error (500) as below.
+        * else ``record_id`` given: existing behavior — resolve
+          ``record_id`` -> ``{consumer,producer}_trajectory_ref`` -> sidecar
+          (DEC-014 D2/D5). Contract preserved exactly:
+            - ``kind="producer"`` on a b0/oracle record (null producer ref) -> a
+              null body (200), NOT an error — the producer tab is hidden.
+            - a non-null ref with a missing sidecar -> HTTP 500 (distinct from
+              the null case), so a broken export is never read as "no gather".
+            - an unknown ``record_id`` -> 404.
+        * neither given -> HTTP 400 (bad request).
+        """
+        if ref is not None:
+            return _resolve_ref_to_envelope(ref)
+        if record_id is None:
+            raise HTTPException(
+                status_code=400,
+                detail="one of 'record_id' or 'ref' is required",
+            )
+        result = _resolve_trace_ref(record_id, kind)
+        if result is _ABSENT:
+            return None
+        return result
 
 
 def _register_task_endpoints(

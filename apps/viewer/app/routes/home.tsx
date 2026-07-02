@@ -532,6 +532,8 @@ export default function Home() {
   useEffect(() => {
     if (viewerConfig?.mode === "tasks") {
       navigate("/task-definitions", { replace: true });
+    } else if (viewerConfig?.mode === "evidence") {
+      navigate("/evidence", { replace: true });
     }
   }, [viewerConfig, navigate]);
   const [selectedJobNames, setSelectedJobNames] = useQueryState(

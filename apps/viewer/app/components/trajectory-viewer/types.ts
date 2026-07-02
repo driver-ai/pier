@@ -13,11 +13,142 @@
  */
 import type { ContentPart, ObservationResult, Step, ToolCall, Trajectory } from "~/lib/types";
 
+/**
+ * Plan 05 enriched-trajectory overlay (the `enrichment` half of the
+ * evidence envelope). Aligned to the raw ATIF by turn/call index — it is
+ * NOT merged into the ATIF objects. The adapter attaches it as an
+ * optional view-sidecar field (`viewEnrichment`), mirroring the existing
+ * `epochMs` / `argsJson` / `subagent` sidecars.
+ *
+ * Field names are byte-exact per Plan 05's emission — do NOT rename.
+ * Every field is optional so a partial or absent overlay degrades to the
+ * raw-ATIF fallback rather than throwing.
+ */
+
+/** Per-call overlay (attached to `ResolvedToolCall.viewEnrichment`). */
+export interface CallEnrichment {
+  call_index?: number;
+  function_name?: string;
+  /** Channel classification (e.g. "read", "search", "execute"). */
+  channel?: string;
+  /** Whether this call landed in the task's gold set. */
+  in_gold?: boolean;
+  /** Attributed new input tokens for this call. */
+  attributed_input_new?: number;
+  /** Marginal cost of this call, in USD. */
+  cost_usd?: number;
+  /** True observation size, in tokens. */
+  obs_tokens?: number;
+  /** Truncated observation preview. */
+  obs_excerpt?: string;
+  /** Path(s) the call touched. */
+  paths?: string[];
+}
+
+/** Per-turn overlay (attached to `ViewStep.viewEnrichment`). */
+export interface StepEnrichment {
+  index?: number;
+  /** New (uncached) input tokens for this turn. */
+  input_new?: number;
+  /** Cached input tokens for this turn. */
+  input_cached?: number;
+  /** Cache-write tokens for this turn. */
+  cache_write?: number;
+  /** Output tokens for this turn. */
+  output?: number;
+  /** Total context size at this turn, in tokens. */
+  context_size?: number;
+  /** Output tokens attributed to gathered context. */
+  output_attributed?: number;
+  /** Baseline (un-attributed) tokens. */
+  base_unattributed?: number;
+  seconds?: number;
+  model_text_excerpt?: string;
+  /** Per-call overlays, aligned to the turn's tool calls by index. */
+  calls?: CallEnrichment[];
+}
+
+/** The `enrichment` half of the Plan 05 envelope. */
+export interface TrajectoryEnrichment {
+  steps: StepEnrichment[];
+}
+
+/**
+ * Gather-only panel payloads (absent/null for consumer trajectories).
+ * Shapes are byte-exact per Plan 05's gather sidecar emission. Every field
+ * is optional so a partial panel degrades gracefully rather than throwing.
+ */
+
+/** One channel row inside `channel_mix.channels` (keyed by channel name). */
+export interface ChannelMixEntry {
+  calls?: number;
+  tokens?: number;
+  cost_usd?: number;
+  seconds?: number;
+  pct_tokens?: number;
+  pct_cost?: number;
+}
+
+/** `panels.channel_mix` — per-channel spend, keyed by channel name. */
+export interface ChannelMixPanel {
+  channels?: Record<string, ChannelMixEntry>;
+  total_tokens?: number;
+  total_cost_usd?: number;
+  total_seconds?: number;
+}
+
+/** One tier bucket inside `panels.tiers` (keyed by tier name: file/structural/overview). */
+export interface TierEntry {
+  count?: number;
+  tokens?: number;
+  pct_tokens?: number;
+  /** File / symbol paths gathered at this tier. */
+  items?: string[];
+}
+
+/** `panels.tiers` — gathered context grouped by tier, keyed by tier name. */
+export type TiersPanel = Record<string, TierEntry>;
+
+/** `panels.coverage` — mean gold coverage + systematically-missed gold paths. */
+export interface CoveragePanel {
+  mean_coverage?: number;
+  /** `[path, count]` pairs — gold locations missed across runs. */
+  systematic_misses?: Array<[string, number]>;
+}
+
+/** One entry in `panels.off_gold` — context read that was NOT in the gold set. */
+export interface OffGoldEntry {
+  path?: string;
+  injected_tokens?: number;
+  label?: string;
+}
+
+export interface EnrichmentPanels {
+  channel_mix?: ChannelMixPanel | null;
+  tiers?: TiersPanel | null;
+  coverage?: CoveragePanel | null;
+  off_gold?: OffGoldEntry[] | null;
+}
+
+/**
+ * The Plan 05 evidence envelope served by `/api/evidence/trajectory`.
+ * `trajectory` is the untouched raw ATIF; the viewer overlays
+ * `enrichment` by turn/call index and hand-rolls panels from `panels`.
+ */
+export interface EnrichedTrajectoryEnvelope {
+  trajectory: Trajectory;
+  enrichment?: TrajectoryEnrichment | null;
+  panels?: EnrichmentPanels | null;
+}
+
 export interface ResolvedToolCall {
   /** Original ATIF tool call, untouched. */
   call: ToolCall;
   /** Pretty-printed JSON of `call.arguments` for the input panel. */
   argsJson: string;
+  /** Optional Plan 05 per-call overlay (by call index). Absent when the
+   *  trajectory was rendered from bare ATIF (fallback). */
+  viewEnrichment?: CallEnrichment;
 }
 
 export interface ResolvedToolResult {
@@ -57,6 +188,10 @@ export interface ViewStep {
   /** Results whose `source_call_id` doesn't match any tool call on this
    *  step. Rendered after the inline tool-call list so no data is hidden. */
   orphanResults: ResolvedToolResult[];
+  /** Optional Plan 05 per-turn overlay (by turn index). Absent when the
+   *  trajectory was rendered from bare ATIF (fallback). Per-call overlays
+   *  live on each `ResolvedToolCall.viewEnrichment`, not here. */
+  viewEnrichment?: StepEnrichment;
 }
 
 export interface ViewTrajectory {

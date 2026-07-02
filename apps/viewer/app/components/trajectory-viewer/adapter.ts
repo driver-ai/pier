@@ -16,7 +16,16 @@ import type {
   ToolCall,
   Trajectory,
 } from "~/lib/types";
-import type { ResolvedToolCall, ResolvedToolResult, ViewStep, ViewTrajectory } from "./types";
+import type {
+  CallEnrichment,
+  EnrichedTrajectoryEnvelope,
+  ResolvedToolCall,
+  ResolvedToolResult,
+  StepEnrichment,
+  TrajectoryEnrichment,
+  ViewStep,
+  ViewTrajectory,
+} from "./types";
 
 /** ATIF content (string | ContentPart[] | null) → ContentPart[]. */
 function toParts(content: MessageContent | ObservationContent): ContentPart[] {
@@ -59,8 +68,14 @@ function epochOf(timestamp: string | null | undefined): number | undefined {
   return Number.isNaN(t) ? undefined : t;
 }
 
-function resolveToolCall(call: ToolCall): ResolvedToolCall {
-  return { call, argsJson: safeStringify(call.arguments ?? {}) };
+function resolveToolCall(call: ToolCall, callEnrichment?: CallEnrichment): ResolvedToolCall {
+  return {
+    call,
+    argsJson: safeStringify(call.arguments ?? {}),
+    // Overlay the Plan 05 per-call enrichment as a sidecar — never merged
+    // into the ATIF `call`. Absent overlay leaves this undefined (fallback).
+    viewEnrichment: callEnrichment,
+  };
 }
 
 /** Conservative error detection: only flag when the result content opens
@@ -108,8 +123,14 @@ function buildViewStep(
   step: Step,
   index: number,
   subagentMap: Map<string, ViewTrajectory>,
+  stepEnrichment?: StepEnrichment,
 ): ViewStep {
-  const toolCalls = (step.tool_calls ?? []).map(resolveToolCall);
+  // Per-call overlay joins by call index within the turn (1:1 with ATIF
+  // tool calls because the enrichment is derived from the same trajectory).
+  const callEnrichments = stepEnrichment?.calls ?? [];
+  const toolCalls = (step.tool_calls ?? []).map((c, i) =>
+    resolveToolCall(c, callEnrichments[i]),
+  );
   const callIds = toolCalls.map((c) => c.call.tool_call_id);
   const rawResults = step.observation?.results ?? [];
   const results = rawResults.map((r, i) => resolveToolResult(r, callIds[i] ?? "", subagentMap));
@@ -134,12 +155,23 @@ function buildViewStep(
     results,
     resultsByCallId,
     orphanResults,
+    viewEnrichment: stepEnrichment,
   };
 }
 
 /** Adapt a top-level ATIF trajectory (or a sub-agent one) into a
- *  view-friendly sidecar without altering its structure. */
-export function adaptTrajectory(traj: Trajectory): ViewTrajectory {
+ *  view-friendly sidecar without altering its structure.
+ *
+ *  When a Plan 05 `enrichment` overlay is supplied, its per-turn / per-call
+ *  fields are attached as `viewEnrichment` sidecars (joined by turn index
+ *  and call index within the turn) — the ATIF objects are never reshaped.
+ *  When `enrichment` is absent/undefined, the raw ATIF renders exactly as
+ *  before (fallback). Sub-agent trajectories are not enriched (single-actor
+ *  runs; Plan 06 scope). */
+export function adaptTrajectory(
+  traj: Trajectory,
+  enrichment?: TrajectoryEnrichment | null,
+): ViewTrajectory {
   // Sub-agents are first-class in ATIF v1.7 (`subagent_trajectories`).
   // Build an id index up front so each `subagent_trajectory_ref` on a
   // tool result can resolve to a fully-built ViewTrajectory.
@@ -148,7 +180,8 @@ export function adaptTrajectory(traj: Trajectory): ViewTrajectory {
     if (sub.trajectory_id) subagentMap.set(sub.trajectory_id, adaptTrajectory(sub));
   }
 
-  const steps = traj.steps.map((s, i) => buildViewStep(s, i, subagentMap));
+  const enrichmentSteps = enrichment?.steps ?? [];
+  const steps = traj.steps.map((s, i) => buildViewStep(s, i, subagentMap, enrichmentSteps[i]));
 
   const agentName = traj.agent.name;
   const model = traj.agent.model_name ?? undefined;
@@ -166,6 +199,30 @@ export function adaptTrajectory(traj: Trajectory): ViewTrajectory {
     totalCostUsd: traj.final_metrics?.total_cost_usd ?? undefined,
     totalSteps: traj.final_metrics?.total_steps ?? undefined,
   };
+}
+
+/** True when `input` is a Plan 05 evidence envelope (`{trajectory, ...}`)
+ *  rather than a bare ATIF trajectory (`{steps, agent, ...}`). */
+export function isEnvelope(
+  input: Trajectory | EnrichedTrajectoryEnvelope,
+): input is EnrichedTrajectoryEnvelope {
+  return (
+    "trajectory" in input &&
+    typeof (input as EnrichedTrajectoryEnvelope).trajectory === "object" &&
+    (input as EnrichedTrajectoryEnvelope).trajectory != null &&
+    "steps" in (input as EnrichedTrajectoryEnvelope).trajectory
+  );
+}
+
+/** Adapt either a Plan 05 envelope or a bare ATIF trajectory into a
+ *  `ViewTrajectory`. Bare trajectories overlay nothing (fallback). */
+export function adaptEnvelope(
+  input: Trajectory | EnrichedTrajectoryEnvelope,
+): ViewTrajectory {
+  if (isEnvelope(input)) {
+    return adaptTrajectory(input.trajectory, input.enrichment);
+  }
+  return adaptTrajectory(input);
 }
 
 function safeStringify(v: unknown): string {

@@ -13,7 +13,7 @@ import { CodeBlock } from "~/components/ui/code-block";
 import { DisclosureChevron, getToolIcon } from "./icons";
 import { getToolCategory, getToolLabel } from "./tools";
 import { TrajectoryImage } from "./TrajectoryImage";
-import type { ResolvedToolCall, ResolvedToolResult } from "./types";
+import type { CallEnrichment, ResolvedToolCall, ResolvedToolResult } from "./types";
 
 export interface ToolCallViewProps {
   toolCall: ResolvedToolCall;
@@ -46,6 +46,7 @@ export function ToolCallView({
   const isError = (result?.isError ?? false) && !result?.subagent;
   const lineCount = resultText ? resultText.split("\n").length : 0;
   const subagent = result?.subagent;
+  const enrichment = toolCall.viewEnrichment;
 
   // Thread mask geometry — the icon sits at row top + 12px (py-px on a
   // leading-5 row, so 1 + 10 = 11). Cut a 14px window around it so the
@@ -124,6 +125,7 @@ export function ToolCallView({
             </>
           )}
         </span>
+        {enrichment && <EnrichmentBadges enrichment={enrichment} />}
         {/* Chevron is always present at low opacity so a single-call row
          *  shows the disclosure affordance even before hover. */}
         <span
@@ -184,6 +186,50 @@ export function ToolCallView({
       )}
     </div>
   );
+}
+
+/**
+ * Plan 05 per-call enrichment overlay, rendered as a compact trailing
+ * strip on the collapsed tool-call row: a channel badge, an in_gold gold
+ * marker, attributed input tokens, marginal cost, and the true observation
+ * size (in tokens). It sits between the (truncating) label and the chevron
+ * so it stays visible even when the label clips. Every field is optional —
+ * an absent overlay renders nothing (raw-ATIF fallback).
+ *
+ * Field names are byte-exact per Plan 05 (`channel`, `in_gold`,
+ * `attributed_input_new`, `cost_usd`, `obs_tokens`).
+ */
+function EnrichmentBadges({ enrichment }: { enrichment: CallEnrichment }) {
+  const { channel, in_gold, attributed_input_new, cost_usd, obs_tokens } = enrichment;
+  return (
+    <span className="ml-1 flex shrink-0 items-center gap-1.5 font-mono text-[10px] tabular-nums text-muted-foreground/80">
+      {channel && (
+        <span className="rounded-sm bg-muted px-1 py-px uppercase tracking-wider text-muted-foreground">
+          {channel}
+        </span>
+      )}
+      {in_gold && (
+        <span
+          title="in gold"
+          className="rounded-sm bg-primary/15 px-1 py-px uppercase tracking-wider text-primary"
+        >
+          gold
+        </span>
+      )}
+      {obs_tokens != null && <span title="true observation size">{compactTokens(obs_tokens)} obs</span>}
+      {attributed_input_new != null && (
+        <span title="attributed input tokens">{compactTokens(attributed_input_new)} attr</span>
+      )}
+      {cost_usd != null && <span title="marginal cost">${cost_usd.toFixed(4)}</span>}
+    </span>
+  );
+}
+
+/** Compact token count for the inline strip (e.g. "3.9k"). */
+function compactTokens(n: number): string {
+  if (n < 1000) return String(n);
+  if (n < 100_000) return `${(n / 1000).toFixed(1)}k`;
+  return `${Math.round(n / 1000)}k`;
 }
 
 /**
