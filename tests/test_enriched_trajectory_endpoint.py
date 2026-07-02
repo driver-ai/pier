@@ -200,6 +200,52 @@ def test_get_enriched_trajectory_by_ref(tmp_path):
     assert resp.status_code == 404
 
 
+def test_get_enriched_trajectory_by_direct_ref(tmp_path):
+    """`?ref=<gather_ref>` resolves a trace ref DIRECTLY (no consumer record).
+
+    This is the standalone-gather view: a gather can be inspected without any
+    run_records join row. Aliases are honored; a dangling ref -> the same
+    distinct error (500) as the record_id path.
+    """
+    run_root = _build_run_root(tmp_path)
+    client = TestClient(create_app(run_root, mode="evidence"))
+
+    # The real slice's driver_production producer ref is a gather.
+    gather_ref = json.loads(FIXTURE.read_text())["records"][DP][
+        "producer_trajectory_ref"
+    ]
+
+    # Direct ref -> that gather's envelope (no record_id needed).
+    resp = client.get("/api/evidence/trajectory", params={"ref": gather_ref})
+    assert resp.status_code == 200
+    env = resp.json()
+    assert env is not None
+    assert env["ref"] == gather_ref
+    assert env["kind"] == "gather"
+    assert env["panels"] is not None
+
+    # An alias key resolves through aliases to the SAME sealed sidecar.
+    resp = client.get("/api/evidence/trajectory", params={"ref": ALIAS_PTS_REF})
+    assert resp.status_code == 200
+    assert resp.json()["ref"] == gather_ref
+
+    # A dangling ref (non-null, no sidecar entry) -> distinct error (500).
+    resp = client.get("/api/evidence/trajectory", params={"ref": DANGLING_REF})
+    assert resp.status_code == 500
+    assert "sidecar" in resp.json()["detail"].lower() or "ref" in resp.json()["detail"].lower()
+
+    # Neither record_id nor ref -> bad request.
+    resp = client.get("/api/evidence/trajectory")
+    assert resp.status_code == 400
+
+    # record_id path still works unchanged alongside the new ref path.
+    resp = client.get(
+        "/api/evidence/trajectory", params={"record_id": _rid(DP), "kind": "consumer"}
+    )
+    assert resp.status_code == 200
+    assert resp.json()["kind"] == "consumer"
+
+
 def test_run_records_forensics_shape(tmp_path):
     """`/api/run-records` records carry typed forensics (display + payload).
 

@@ -238,6 +238,24 @@ class DataNote(BaseModel):
     affects: list[str] = []
 
 
+class GatherSummary(BaseModel):
+    """One distinct gather (producer trajectory) row for the Trajectories browser.
+
+    Derived from a ``gather:{run_id}:{model}:{condition}:{seed}`` ref in
+    ``traces/index.json`` plus its sidecar ``panels``. ``model``/``condition``/
+    ``seed`` are parsed positionally from the ref; ``mean_coverage`` and
+    ``cost_usd`` are read from ``panels.coverage.mean_coverage`` and
+    ``panels.channel_mix.total_cost_usd`` respectively (null when absent).
+    """
+
+    ref: str
+    model: str | None = None
+    condition: str | None = None
+    seed: int | None = None
+    mean_coverage: float | None = None
+    cost_usd: float | None = None
+
+
 class Stat(BaseModel):
     """A summary statistic block, mirroring pier-analytics ``summary.Stat``."""
 
