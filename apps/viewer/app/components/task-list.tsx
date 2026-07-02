@@ -31,6 +31,16 @@ export interface TaskListProps {
   conditions: ConditionMeta[] | null;
   /** The clicked condition id — its column is visually marked (not a filter). */
   highlightCondition?: string | null;
+  /**
+   * Show a Model column (from `row.model`), placed right after Item. Set by the
+   * route when Model = All so the expanded per-model rows are distinguishable.
+   */
+  showModel?: boolean;
+  /**
+   * Show a Consumer-mode column (from `row.examMode`), placed after Item/Model.
+   * Set by the route when Consumer mode = All so expanded rows are readable.
+   */
+  showMode?: boolean;
   /** Row click → the route navigates to the trace view by `row.recordId`. */
   onRowClick?: (row: TaskRow) => void;
   isLoading?: boolean;
@@ -75,6 +85,8 @@ export function TaskList({
   rows,
   conditions,
   highlightCondition,
+  showModel,
+  showMode,
   onRowClick,
   isLoading,
 }: TaskListProps) {
@@ -127,6 +139,36 @@ export function TaskList({
       };
     });
 
+    const scopeCols: ColumnDef<TaskRow>[] = [];
+    if (showModel) {
+      scopeCols.push({
+        id: "model",
+        accessorFn: (row) => row.model,
+        header: ({ column }) => (
+          <SortableHeader column={column}>Model</SortableHeader>
+        ),
+        cell: ({ row }) => (
+          <span className="font-mono text-xs">{row.original.model}</span>
+        ),
+        sortingFn: "alphanumeric",
+        enableSorting: true,
+      });
+    }
+    if (showMode) {
+      scopeCols.push({
+        id: "exam_mode",
+        accessorFn: (row) => row.examMode,
+        header: ({ column }) => (
+          <SortableHeader column={column}>Consumer mode</SortableHeader>
+        ),
+        cell: ({ row }) => (
+          <span className="font-mono text-xs">{row.original.examMode}</span>
+        ),
+        sortingFn: "alphanumeric",
+        enableSorting: true,
+      });
+    }
+
     return [
       {
         id: "item",
@@ -142,6 +184,7 @@ export function TaskList({
         sortingFn: "alphanumeric",
         enableSorting: true,
       },
+      ...scopeCols,
       {
         id: "question",
         accessorFn: (row) => row.question ?? "",
@@ -171,7 +214,7 @@ export function TaskList({
         enableSorting: true,
       },
     ];
-  }, [columnIds, highlightCondition, railById]);
+  }, [columnIds, highlightCondition, railById, showModel, showMode]);
 
   // Default sort: disagreement DESC. Controlled so the header shows the active
   // sort indicator and the user can re-sort; rows also arrive pre-sorted this

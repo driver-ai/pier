@@ -7,8 +7,9 @@
 //   - `model` — which model's matrix to show. Defaults to the first model in the
 //     records when absent (so the page renders straight from the nav tab).
 //   - `exam_mode` — consumer mode. Defaults to "sealed" if present, else the
-//     first exam_mode. The per-condition matrix is inherently per model+mode, so
-//     these two drive the `taskRowsFor` scope (not "All").
+//     first exam_mode. These two drive the `taskRowsFor` scope. Each may be set
+//     to "All" (the ALL sentinel, cleared from the URL): the matrix then expands
+//     so every row is still exactly one (model, mode) — scores are never blended.
 //   - `task_type` — the item's `exam_type` (mcq/cloze/claim/rubric/…); defaults
 //     to "All". When set, filters the rows to `row.examType === task_type`.
 //   - `condition` — OPTIONAL highlight carried when drilled from a bar (a column
@@ -77,8 +78,8 @@ function distinct(
 
 /**
  * A labeled scope/filter dropdown mirroring trajectories.tsx's `FilterSelect`.
- * When `allowAll` is set an "All" option is prepended (used for task type); the
- * scope selects (model/mode) omit it because the matrix is inherently scoped.
+ * When `allowAll` is set an "All" option is prepended — used for task type and,
+ * via row-expansion, the model and consumer-mode scope selects.
  */
 function FilterSelect({
   label,
@@ -167,22 +168,37 @@ export default function Tasks() {
     [rows]
   );
 
-  // Effective scope: fall back to defaults so the page renders with no params.
-  // Model → first present; exam_mode → "sealed" if present else the first.
-  const model =
-    modelParam && modelOpts.includes(modelParam)
-      ? modelParam
-      : modelOpts[0] ?? "";
-  const examMode =
-    examModeParam && examModeOpts.includes(examModeParam)
-      ? examModeParam
-      : examModeOpts.includes("sealed")
-        ? "sealed"
-        : examModeOpts[0] ?? "";
+  // Effective scope. `null` means "All" (row-expansion, not a blend). "All" is
+  // opt-in via the ALL sentinel; the DEFAULTS stay concrete so the page renders
+  // scoped from the nav tab. A present-but-invalid value falls back to the
+  // concrete default (never silently to All).
+  //   Model → All when ALL; else first present.
+  //   exam_mode → All when ALL; else "sealed" if present, else the first.
+  const model: string | null =
+    modelParam === ALL
+      ? null
+      : modelParam && modelOpts.includes(modelParam)
+        ? modelParam
+        : modelOpts[0] ?? "";
+  const examMode: string | null =
+    examModeParam === ALL
+      ? null
+      : examModeParam && examModeOpts.includes(examModeParam)
+        ? examModeParam
+        : examModeOpts.includes("sealed")
+          ? "sealed"
+          : examModeOpts[0] ?? "";
+
+  // The value the selects display: the ALL sentinel when the axis is All, else
+  // the resolved concrete value.
+  const modelValue = model === null ? ALL : model;
+  const examModeValue = examMode === null ? ALL : examMode;
 
   // Shape scoped rows, then apply the task-type filter (row-level, post-shape).
+  // `null` on an axis expands rows over that axis (each row still one model+mode).
   const shapedRows = useMemo(() => {
-    if (!records || !model || !examMode) return [];
+    if (!records) return [];
+    if (model === "" || examMode === "") return [];
     return taskRowsFor(
       records,
       { model, examMode },
@@ -200,7 +216,9 @@ export default function Tasks() {
   const highlightMeta = conditionLabel(conditions, condition);
   const highlightLabel = highlightMeta?.label ?? condition;
 
-  const hasScope = !!model && !!examMode;
+  // A scope is valid when each axis is either All (null) or a concrete non-empty
+  // value; only the "no models/modes present at all" empty-data case is invalid.
+  const hasScope = model !== "" && examMode !== "";
   const hasRows = visibleRows.length > 0;
 
   return (
@@ -227,7 +245,9 @@ export default function Tasks() {
             </h1>
             <p className="mt-4 text-sm text-muted-foreground">
               Per-item scores across conditions. Filter by model, consumer mode,
-              and task type; sort by disagreement.
+              and task type; sort by disagreement. Set model or consumer mode to
+              All to expand one row per (model, mode) — scores stay per-row, not
+              blended.
               {condition ? (
                 <>
                   {" "}
@@ -247,15 +267,17 @@ export default function Tasks() {
       <div className="mb-6 flex flex-wrap items-end gap-4">
         <FilterSelect
           label="Model"
-          value={model}
-          onChange={(v) => setModel(v)}
+          value={modelValue}
+          onChange={(v) => setModel(v === ALL ? null : v)}
           options={modelOpts}
+          allowAll
         />
         <FilterSelect
           label="Consumer mode"
-          value={examMode}
-          onChange={(v) => setExamMode(v)}
+          value={examModeValue}
+          onChange={(v) => setExamMode(v === ALL ? null : v)}
           options={examModeOpts}
+          allowAll
         />
         <FilterSelect
           label="Task type"
@@ -285,6 +307,8 @@ export default function Tasks() {
           rows={visibleRows}
           conditions={conditions ?? null}
           highlightCondition={condition || null}
+          showModel={model === null}
+          showMode={examMode === null}
           onRowClick={(row) =>
             navigate(`/trace?record=${encodeURIComponent(row.recordId)}`)
           }
