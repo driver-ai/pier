@@ -1,9 +1,13 @@
-"""DEC-030 safety guarantee: with PIER_CAPTURE_STRACE unset, the three touched
+"""DEC-030 safety guarantee: with PIER_CAPTURE_STRACE unset, the capture-gated
 seams behave byte-identically to their pre-capture form.
 
 Each test deletes the env flag, so the shared ``capture_strace_enabled()`` gate
 reads falsy regardless of any kwarg or stale attribute, and asserts the seam
 produces the documented pre-change output.
+
+Note: MCP-host allowlisting is no longer capture-gated -- a configured MCP server
+widens the allowlist regardless of capture (see test_capture_network_allowlist).
+The no-MCP allowlist baseline is still asserted below.
 """
 
 import asyncio
@@ -174,13 +178,14 @@ def test_network_allowlist_is_baseline_without_mcp(
     assert allowlist.domains == ["api.anthropic.com"]
 
 
-def test_network_allowlist_baseline_even_with_mcp_when_env_unset(
+def test_network_allowlist_includes_mcp_when_env_unset(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """With capture off, even an MCP-configured agent gets the baseline allowlist.
+    """MCP-host allowlisting is no longer capture-gated: with capture off, an
+    MCP-configured agent still widens the allowlist to reach its MCP host.
 
-    The MCP-host widening is capture-gated, so a non-capture run with mcp_servers
-    set is byte-identical to upstream (the gap the original review flagged).
+    (The no-MCP baseline stays byte-identical to upstream -- see
+    test_network_allowlist_is_baseline_without_mcp.)
     """
     monkeypatch.delenv("PIER_CAPTURE_STRACE", raising=False)
     monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
@@ -194,4 +199,4 @@ def test_network_allowlist_baseline_even_with_mcp_when_env_unset(
     )
     agent = ClaudeCode(logs_dir=tmp_path, mcp_servers=[server])
 
-    assert agent.network_allowlist().domains == ["api.anthropic.com"]
+    assert "mcp.driverai.com" in agent.network_allowlist().domains

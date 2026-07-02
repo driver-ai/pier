@@ -23,14 +23,11 @@ def test_network_allowlist_includes_mcp_hosts(
     assert "mcp.driverai.com" in allowlist.domains
 
 
-def test_network_allowlist_mcp_hosts_gated_on_capture(
+def test_network_allowlist_mcp_hosts_not_gated_on_capture(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
-    """With capture OFF, an MCP-configured agent does NOT widen the allowlist.
-
-    This is the DEC-030 byte-identical guarantee for MCP-configured runs (the
-    case the disabled-identity test could not cover before MCP gating).
-    """
+    """MCP-host allowlisting is independent of capture: with capture OFF, an
+    MCP-configured agent still widens the allowlist to reach its MCP host."""
     monkeypatch.delenv("PIER_CAPTURE_STRACE", raising=False)
     server = MCPServerConfig(
         name="driver",
@@ -40,8 +37,8 @@ def test_network_allowlist_mcp_hosts_gated_on_capture(
     with_mcp = ClaudeCode(logs_dir=tmp_path, mcp_servers=[server]).network_allowlist()
     baseline = ClaudeCode(logs_dir=tmp_path).network_allowlist()
 
-    assert with_mcp.domains == baseline.domains
-    assert "mcp.driverai.com" not in with_mcp.domains
+    assert "mcp.driverai.com" in with_mcp.domains
+    assert "mcp.driverai.com" not in baseline.domains
 
 
 def test_network_allowlist_unchanged_without_mcp(
