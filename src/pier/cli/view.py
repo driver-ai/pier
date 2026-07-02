@@ -108,11 +108,32 @@ def _find_available_port(host: str, start: int, end: int) -> int | None:
     return None
 
 
-def _detect_folder_type(folder: Path) -> str:
-    """Detect whether folder contains jobs or tasks.
+def _is_evidence_folder(folder: Path) -> bool:
+    """Detect the flat sidecar layout of a frontier evidence run.
 
-    Returns 'jobs' or 'tasks'.
+    An evidence ``out_dir`` carries its sidecars (``conditions.json``,
+    ``run_records.json``, ``condition_aggregates.json``, ``traces/``) at the
+    root rather than one-per-subdirectory. Require ``conditions.json`` plus at
+    least one other sidecar so a jobs/tasks folder is never misclassified.
     """
+    if not (folder / "conditions.json").is_file():
+        return False
+    other_sidecars = (
+        (folder / "run_records.json").is_file(),
+        (folder / "condition_aggregates.json").is_file(),
+        (folder / "traces").is_dir(),
+    )
+    return any(other_sidecars)
+
+
+def _detect_folder_type(folder: Path) -> str:
+    """Detect whether folder contains evidence, jobs, or tasks.
+
+    Returns 'evidence', 'jobs', or 'tasks'.
+    """
+    if _is_evidence_folder(folder):
+        return "evidence"
+
     subdirs = sorted(
         (d for d in folder.iterdir() if d.is_dir() and not d.name.startswith(".")),
         key=lambda d: d.name,

@@ -24,6 +24,7 @@ from pier.models.job.config import (
 from pier.models.job.result import JobStats
 from pier.models.trial.result import TrialResult
 from pier.viewer.models import (
+    ConditionMeta,
     CritiqueHeatmapCell,
     CritiqueHeatmapColumn,
     CritiqueHeatmapData,
@@ -245,7 +246,9 @@ def create_app(
             output_cost_per_token=output_rate,
         )
 
-    if mode == "tasks":
+    if mode == "evidence":
+        _register_evidence_endpoints(app, folder)
+    elif mode == "tasks":
         _register_task_endpoints(app, folder, cleanup_callbacks)
     else:
         _register_job_endpoints(app, folder)
@@ -273,6 +276,35 @@ def create_app(
             return FileResponse(static_dir / "index.html")
 
     return app
+
+
+def _register_evidence_endpoints(app: FastAPI, run_dir: Path) -> None:
+    """Register API endpoints for the flat sidecar evidence layout (DEC-014 D1).
+
+    Endpoints are registered inside this closure over the run root so they can
+    locate the sidecars. Plan 03 adds /api/condition-aggregates and
+    /api/run-records inside this same closure.
+    """
+
+    def _read_json_file(path: Path) -> Any | None:
+        if not path.exists() or not path.is_file():
+            return None
+        try:
+            return json.loads(path.read_text())
+        except Exception:
+            return None
+
+    @app.get("/api/conditions", response_model=list[ConditionMeta])
+    def get_conditions() -> list[ConditionMeta]:
+        """Return the run's condition metadata from conditions.json.
+
+        Malformed conditions.json collapses to the absent path (``_read_json_file``
+        returns ``None``), so it surfaces as 404 rather than 500.
+        """
+        data = _read_json_file(run_dir / "conditions.json")
+        if data is None:
+            raise HTTPException(status_code=404, detail="conditions.json not found")
+        return [ConditionMeta.model_validate(c) for c in data]
 
 
 def _register_task_endpoints(

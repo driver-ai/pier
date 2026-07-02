@@ -214,6 +214,17 @@ class TrialCritiqueDetail(BaseModel):
     has_result_md: bool = False
 
 
+class ConditionMeta(BaseModel):
+    """Metadata for one evidence condition, mirroring emitted ``conditions.json``."""
+
+    id: str
+    label: str
+    description: str
+    is_rail: bool
+    role: str
+    order: int
+
+
 class ModelPricing(BaseModel):
     """Per-token pricing rates for a model, sourced from LiteLLM."""
 
