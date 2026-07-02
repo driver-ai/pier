@@ -40,6 +40,13 @@ export type TaskRow = {
    * conditions have a score.
    */
   disagreement: number;
+  /**
+   * The item's exam/task type (mcq/cloze/claim/rubric/exhaustiveness/
+   * elicitation), taken from the first non-null `exam_type` among the item's
+   * records (it is consistent per item); `null` when no record carries one.
+   * Used by the tasks route's task-type filter.
+   */
+  examType: string | null;
 };
 
 /** Scope selector carried from the clicked comparison cell. */
@@ -173,12 +180,22 @@ export function taskRowsFor(
     // Question: prefer the highlight condition's forensics, else any sibling's.
     const question = pickQuestion(group, highlightCondition);
 
+    // Exam/task type: first non-null across the item's records (consistent).
+    let examType: string | null = null;
+    for (const r of group) {
+      if (r.exam_type != null && r.exam_type !== "") {
+        examType = r.exam_type;
+        break;
+      }
+    }
+
     rows.push({
       itemId,
       question,
       recordId: representative.record_id,
       scores,
       disagreement,
+      examType,
     });
   }
 

@@ -1,20 +1,29 @@
-// Tasks drill route (Plan 04, Task 5) — reached by clicking a condition × model
-// cell in the evidence `ConditionComparison`. The clicked cell scopes the list
-// by `{model, exam_mode}` (URL params); the clicked `condition` is carried as a
-// HIGHLIGHT param, not a filter — the list shows ALL conditions per item
-// (DEC-014 D2, dry-run 04 MEDIUM 1).
+// Tasks browser route — now a first-class, directly-navigable destination
+// (reached from the top nav Tasks tab) AND a drill target from an Evidence
+// `ConditionComparison` cell. It lists per-item scores across conditions for a
+// chosen {model, exam_mode} scope, filterable by task type.
+//
+// Scope + filters (all nuqs-backed, deep-linkable):
+//   - `model` — which model's matrix to show. Defaults to the first model in the
+//     records when absent (so the page renders straight from the nav tab).
+//   - `exam_mode` — consumer mode. Defaults to "sealed" if present, else the
+//     first exam_mode. The per-condition matrix is inherently per model+mode, so
+//     these two drive the `taskRowsFor` scope (not "All").
+//   - `task_type` — the item's `exam_type` (mcq/cloze/claim/rubric/…); defaults
+//     to "All". When set, filters the rows to `row.examType === task_type`.
+//   - `condition` — OPTIONAL highlight carried when drilled from a bar (a column
+//     is visually marked); absent when navigated from the nav tab. Never a
+//     required filter.
 //
 // Data: reuses Plan 01/03's `/api/run-records` via `fetchRunRecords` (404 → [])
 // and Plan 02's condition config via `useConditions` — no filtered endpoint, no
 // aggregate re-fetch (Architecture Fit). `taskRowsFor` (Task 3) shapes the
-// served records client-side into per-item rows. Rows are pre-sorted by
-// disagreement DESC; `TaskList` (Task 4) renders + re-sorts.
+// served records client-side into per-item rows, pre-sorted by disagreement
+// DESC; `TaskList` (Task 4) renders + re-sorts. Filter options are derived from
+// the loaded data (distinct values) — no hardcoded condition/exam_type ids.
 //
-// Deep-linkable (URL carries scope + highlight); browser back returns to
-// `/evidence`. A row click navigates into the Plan 06 trace view by the row's
-// canonical `record_id` (DEC-014 D2) at `/trace?record=<recordId>` — that route
-// does not exist yet, so it 404s until Plan 06 implements it. Presents evidence
-// only (DEC-010).
+// A row click navigates into the Plan 06 trace view by the row's canonical
+// `record_id` at `/trace?record=<recordId>`. Presents evidence only (DEC-010).
 
 import { useQuery } from "@tanstack/react-query";
 import { ListTree } from "lucide-react";
@@ -39,20 +48,91 @@ import {
   EmptyMedia,
   EmptyTitle,
 } from "~/components/ui/empty";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "~/components/ui/select";
 import { fetchRunRecords } from "~/lib/api";
 import { conditionLabel, useConditions } from "~/lib/conditions";
 import { taskRowsFor } from "~/lib/tasks";
+import type { RunRecord } from "~/lib/types";
+
+const ALL = "__all__";
+
+/** Distinct, sorted non-empty string values of one field across records. */
+function distinct(
+  rows: RunRecord[],
+  pick: (row: RunRecord) => string | null | undefined
+): string[] {
+  const set = new Set<string>();
+  for (const r of rows) {
+    const v = pick(r);
+    if (v != null && v !== "") set.add(v);
+  }
+  return [...set].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+}
+
+/**
+ * A labeled scope/filter dropdown mirroring trajectories.tsx's `FilterSelect`.
+ * When `allowAll` is set an "All" option is prepended (used for task type); the
+ * scope selects (model/mode) omit it because the matrix is inherently scoped.
+ */
+function FilterSelect({
+  label,
+  value,
+  onChange,
+  options,
+  allowAll,
+  formatOption,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  options: string[];
+  allowAll?: boolean;
+  formatOption?: (v: string) => string;
+}) {
+  return (
+    <label className="flex flex-col gap-1">
+      <span className="text-xs text-muted-foreground">{label}</span>
+      <Select value={value} onValueChange={onChange}>
+        <SelectTrigger size="sm" className="min-w-[9rem]">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {allowAll ? <SelectItem value={ALL}>All</SelectItem> : null}
+          {options.map((opt) => (
+            <SelectItem key={opt} value={opt}>
+              {formatOption ? formatOption(opt) : opt}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </label>
+  );
+}
 
 export default function Tasks() {
   const navigate = useNavigate();
 
-  // Scope + highlight from the clicked comparison cell (URL params, deep-link).
-  const [model] = useQueryState("model", parseAsString.withDefault(""));
-  const [examMode] = useQueryState("exam_mode", parseAsString.withDefault(""));
-  const [condition] = useQueryState(
-    "condition",
+  // Scope + filters + highlight (URL params, deep-link).
+  const [modelParam, setModel] = useQueryState(
+    "model",
     parseAsString.withDefault("")
   );
+  const [examModeParam, setExamMode] = useQueryState(
+    "exam_mode",
+    parseAsString.withDefault("")
+  );
+  const [taskType, setTaskType] = useQueryState(
+    "task_type",
+    parseAsString.withDefault(ALL)
+  );
+  // Highlight only — set when drilled from an Evidence bar; absent from the nav.
+  const [condition] = useQueryState("condition", parseAsString.withDefault(""));
 
   // Reuse the served run records (404 → []); no filtered endpoint.
   const {
@@ -74,7 +154,34 @@ export default function Tasks() {
   const isLoading = recordsLoading || condLoading;
   const isFetching = recordsFetching || condFetching;
 
-  const rows = useMemo(() => {
+  const rows = records ?? [];
+
+  // Filter options derived from the loaded data (never hardcoded ids).
+  const modelOpts = useMemo(() => distinct(rows, (r) => r.model), [rows]);
+  const examModeOpts = useMemo(
+    () => distinct(rows, (r) => r.exam_mode),
+    [rows]
+  );
+  const taskTypeOpts = useMemo(
+    () => distinct(rows, (r) => r.exam_type),
+    [rows]
+  );
+
+  // Effective scope: fall back to defaults so the page renders with no params.
+  // Model → first present; exam_mode → "sealed" if present else the first.
+  const model =
+    modelParam && modelOpts.includes(modelParam)
+      ? modelParam
+      : modelOpts[0] ?? "";
+  const examMode =
+    examModeParam && examModeOpts.includes(examModeParam)
+      ? examModeParam
+      : examModeOpts.includes("sealed")
+        ? "sealed"
+        : examModeOpts[0] ?? "";
+
+  // Shape scoped rows, then apply the task-type filter (row-level, post-shape).
+  const shapedRows = useMemo(() => {
     if (!records || !model || !examMode) return [];
     return taskRowsFor(
       records,
@@ -84,12 +191,17 @@ export default function Tasks() {
     );
   }, [records, model, examMode, conditions, condition]);
 
+  const visibleRows = useMemo(() => {
+    if (taskType === ALL) return shapedRows;
+    return shapedRows.filter((r) => r.examType === taskType);
+  }, [shapedRows, taskType]);
+
   // Human-readable label for the highlighted condition (falls back to the id).
   const highlightMeta = conditionLabel(conditions, condition);
   const highlightLabel = highlightMeta?.label ?? condition;
 
   const hasScope = !!model && !!examMode;
-  const hasRows = rows.length > 0;
+  const hasRows = visibleRows.length > 0;
 
   return (
     <div>
@@ -114,21 +226,15 @@ export default function Tasks() {
               Tasks
             </h1>
             <p className="mt-4 text-sm text-muted-foreground">
-              Per-item scores across all conditions
-              {hasScope ? (
+              Per-item scores across conditions. Filter by model, consumer mode,
+              and task type; sort by disagreement.
+              {condition ? (
                 <>
                   {" "}
-                  for <span className="text-foreground">{model}</span> at{" "}
-                  <span className="text-foreground">{examMode}</span>
-                  {condition ? (
-                    <>
-                      , highlighting{" "}
-                      <span className="text-foreground">{highlightLabel}</span>
-                    </>
-                  ) : null}
+                  Highlighting{" "}
+                  <span className="text-foreground">{highlightLabel}</span>.
                 </>
               ) : null}
-              . Sort by disagreement to find where conditions diverge most.
             </p>
           </div>
           <Button asChild variant="outline" size="sm">
@@ -137,31 +243,52 @@ export default function Tasks() {
         </div>
       </div>
 
+      {/* Scope + filters — all deep-linkable via nuqs. */}
+      <div className="mb-6 flex flex-wrap items-end gap-4">
+        <FilterSelect
+          label="Model"
+          value={model}
+          onChange={(v) => setModel(v)}
+          options={modelOpts}
+        />
+        <FilterSelect
+          label="Consumer mode"
+          value={examMode}
+          onChange={(v) => setExamMode(v)}
+          options={examModeOpts}
+        />
+        <FilterSelect
+          label="Task type"
+          value={taskType}
+          onChange={(v) => setTaskType(v === ALL ? null : v)}
+          options={taskTypeOpts}
+          allowAll
+        />
+      </div>
+
       {!isLoading && (!hasScope || !hasRows) ? (
         <Empty className="border">
           <EmptyHeader>
             <EmptyMedia variant="icon">
               <ListTree />
             </EmptyMedia>
-            <EmptyTitle>
-              {hasScope ? "No tasks for this scope" : "No scope selected"}
-            </EmptyTitle>
+            <EmptyTitle>No tasks for this scope</EmptyTitle>
             <EmptyDescription>
-              {hasScope
-                ? "This model / consumer-mode has no scored run records. The run-records sidecar may be absent, or the scope carries no items."
-                : "Open this view from an evidence comparison cell to scope it by model and consumer mode."}
+              This model / consumer-mode / task-type combination has no scored
+              run records. The run-records sidecar may be absent, or the active
+              filters exclude everything.
             </EmptyDescription>
           </EmptyHeader>
         </Empty>
       ) : (
         <TaskList
-          rows={rows}
+          rows={visibleRows}
           conditions={conditions ?? null}
           highlightCondition={condition || null}
           onRowClick={(row) =>
             navigate(`/trace?record=${encodeURIComponent(row.recordId)}`)
           }
-          isLoading={isLoading || (isFetching && rows.length === 0)}
+          isLoading={isLoading || (isFetching && visibleRows.length === 0)}
         />
       )}
     </div>

@@ -19,15 +19,17 @@ import { NavLink, Outlet, useLocation, useSearchParams } from "react-router";
 import { fetchConfig } from "~/lib/api";
 import { cn } from "~/lib/utils";
 
-// The section a route belongs to, for active-tab resolution. Tasks and
-// record-mode Trace are part of the Evidence flow, so they resolve to
-// "evidence". The Trajectories browser (`/trajectories`) — and gather-mode
-// `/trace?gather=` reached from it — resolve to "trajectories".
+// The section a route belongs to, for active-tab resolution. Tasks is now a
+// first-class destination (`/tasks` → "tasks"). Record-mode Trace stays part of
+// the Evidence flow, so it resolves to "evidence". The Trajectories browser
+// (`/trajectories`) — and gather-mode `/trace?gather=` reached from it — resolve
+// to "trajectories".
 function activeSection(
   pathname: string,
   isGatherTrace: boolean
-): "evidence" | "trajectories" | "method" {
+): "evidence" | "tasks" | "trajectories" | "method" {
   if (pathname.startsWith("/method")) return "method";
+  if (pathname.startsWith("/tasks")) return "tasks";
   if (pathname.startsWith("/trajectories")) return "trajectories";
   if (pathname.startsWith("/trace") && isGatherTrace) return "trajectories";
   return "evidence";
@@ -92,6 +94,9 @@ export default function EvidenceLayout() {
           <nav className="flex items-center gap-6">
             <NavTab to="/evidence" active={section === "evidence"}>
               Evidence
+            </NavTab>
+            <NavTab to="/tasks" active={section === "tasks"}>
+              Tasks
             </NavTab>
             <NavTab
               to="/trajectories"
