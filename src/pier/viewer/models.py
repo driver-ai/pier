@@ -225,6 +225,19 @@ class ConditionMeta(BaseModel):
     order: int
 
 
+class DataNote(BaseModel):
+    """One active data-quality note, mirroring emitted ``data_notes.json`` (Plan 07).
+
+    Declares a known-suspect data issue and the metric ids it ``affects`` so the
+    viewer can badge those numbers and list the note on the data-notes surface.
+    """
+
+    id: str
+    title: str
+    description: str
+    affects: list[str] = []
+
+
 class Stat(BaseModel):
     """A summary statistic block, mirroring pier-analytics ``summary.Stat``."""
 

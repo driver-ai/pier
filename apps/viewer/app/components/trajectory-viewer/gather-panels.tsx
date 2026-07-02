@@ -16,6 +16,7 @@
  */
 import { useState } from "react";
 
+import { DataQualityBadge } from "~/components/data-quality";
 import { cn } from "~/lib/utils";
 import type {
   ChannelMixEntry,
@@ -175,16 +176,22 @@ function StackedBar({ segments }: { segments: Segment[] }) {
 function PanelSection({
   title,
   subtitle,
+  titleAdornment,
   children,
 }: {
   title: string;
   subtitle?: string;
+  /** Optional inline node rendered next to the title (e.g. a data-quality badge). */
+  titleAdornment?: React.ReactNode;
   children: React.ReactNode;
 }) {
   return (
     <section className="space-y-3 border border-border p-4">
       <div className="flex items-baseline justify-between gap-2">
-        <h4 className="text-sm font-medium">{title}</h4>
+        <div className="flex items-center gap-1.5">
+          <h4 className="text-sm font-medium">{title}</h4>
+          {titleAdornment}
+        </div>
         {subtitle != null && (
           <span className="text-xs text-muted-foreground">{subtitle}</span>
         )}
@@ -345,6 +352,7 @@ function CoverageOffGoldSection({
   return (
     <PanelSection
       title="Coverage & off-gold"
+      titleAdornment={<DataQualityBadge metric="coverage" />}
       subtitle={
         meanCov != null ? `mean coverage ${(meanCov * 100).toFixed(0)}%` : undefined
       }
@@ -391,9 +399,10 @@ function CoverageOffGoldSection({
         </div>
 
         <div>
-          <div className="mb-1 text-xs font-medium">
-            Off-gold reads
-            <span className="ml-1 text-muted-foreground">({off.length})</span>
+          <div className="mb-1 flex items-center gap-1 text-xs font-medium">
+            <span>Off-gold reads</span>
+            <span className="text-muted-foreground">({off.length})</span>
+            <DataQualityBadge metric="off_gold" />
           </div>
           {off.length === 0 ? (
             <div className="text-xs text-muted-foreground">None</div>

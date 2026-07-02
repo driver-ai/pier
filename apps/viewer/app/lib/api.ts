@@ -12,6 +12,7 @@ import type {
   CritiqueRunSummary,
   ConditionAggregate,
   ConditionMeta,
+  DataNote,
   FileInfo,
   JobFilters,
   JobHeatmapColumnBy,
@@ -75,6 +76,17 @@ export async function fetchConditions(): Promise<ConditionMeta[] | null> {
   }
   if (!response.ok) {
     throw new Error(`Failed to fetch conditions: ${response.statusText}`);
+  }
+  return response.json();
+}
+
+export async function fetchDataNotes(): Promise<DataNote[]> {
+  const response = await fetch(`${API_BASE}/api/data-notes`);
+  if (response.status === 404) {
+    return [];
+  }
+  if (!response.ok) {
+    throw new Error(`Failed to fetch data notes: ${response.statusText}`);
   }
   return response.json();
 }

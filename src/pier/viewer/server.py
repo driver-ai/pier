@@ -34,6 +34,7 @@ from pier.viewer.models import (
     CritiqueItemSummary,
     CritiqueRunDetail,
     CritiqueRunSummary,
+    DataNote,
     EvalSummary,
     FileInfo,
     FilterOption,
@@ -342,6 +343,21 @@ def _register_evidence_endpoints(app: FastAPI, run_dir: Path) -> None:
         if not isinstance(data, dict) or "records" not in data:
             raise HTTPException(status_code=404, detail="run_records.json not found")
         return [RunRecord.model_validate(r) for r in data["records"]]
+
+    @app.get("/api/data-notes", response_model=list[DataNote])
+    def get_data_notes() -> list[DataNote]:
+        """Return the run's active data-quality notes from data_notes.json.
+
+        Passthrough of the ``data_notes.json`` sidecar's inner ``notes`` list
+        (the ``{run_id, notes}`` envelope; Plan 07). Each note declares which
+        metrics it ``affects`` so the UI can badge suspect numbers. An absent /
+        malformed sidecar, or one lacking the inner key, surfaces as 404 (never
+        500), mirroring ``get_conditions``.
+        """
+        data = _read_json_file(run_dir / "data_notes.json")
+        if not isinstance(data, dict) or "notes" not in data:
+            raise HTTPException(status_code=404, detail="data_notes.json not found")
+        return [DataNote.model_validate(n) for n in data["notes"]]
 
     # Sentinel distinguishing "ref is null / producer absent" (-> null body) from
     # "ref is non-null but its sidecar could not be resolved" (-> distinct error).

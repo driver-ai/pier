@@ -23,6 +23,7 @@ import { useMemo, useState } from "react";
 
 import { ConditionComparison } from "~/components/condition-comparison";
 import { CostLens } from "~/components/cost-lens";
+import { DataNotesSurface } from "~/components/data-quality";
 import {
   Breadcrumb,
   BreadcrumbItem,
@@ -95,20 +96,26 @@ export default function Evidence() {
       </div>
 
       {!isLoading && !hasAggregates ? (
-        <Empty className="border">
-          <EmptyHeader>
-            <EmptyMedia variant="icon">
-              <BarChart3 />
-            </EmptyMedia>
-            <EmptyTitle>No evidence for this run</EmptyTitle>
-            <EmptyDescription>
-              This run has no condition aggregates to compare. The evidence
-              sidecar (<code>condition_aggregates.json</code>) may be absent.
-            </EmptyDescription>
-          </EmptyHeader>
-        </Empty>
+        <div className="flex flex-col gap-8">
+          {/* Active data-quality notes surface even when there are no aggregates. */}
+          <DataNotesSurface />
+          <Empty className="border">
+            <EmptyHeader>
+              <EmptyMedia variant="icon">
+                <BarChart3 />
+              </EmptyMedia>
+              <EmptyTitle>No evidence for this run</EmptyTitle>
+              <EmptyDescription>
+                This run has no condition aggregates to compare. The evidence
+                sidecar (<code>condition_aggregates.json</code>) may be absent.
+              </EmptyDescription>
+            </EmptyHeader>
+          </Empty>
+        </div>
       ) : (
         <div className="flex flex-col gap-8">
+          {/* Active data-quality notes (Plan 07) — config-driven; hidden when none. */}
+          <DataNotesSurface />
           <ConditionComparison
             aggregates={aggregates}
             conditions={conditions}

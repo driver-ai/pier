@@ -413,6 +413,16 @@ export interface ConditionMeta {
   order: number;
 }
 
+// One active data-quality note (Plan 07). Mirrors the backend `DataNote`
+// pydantic model / emitted data_notes.json: declares a known-suspect data issue
+// and the metric ids it `affects` (e.g. "coverage", "off_gold").
+export interface DataNote {
+  id: string;
+  title: string;
+  description: string;
+  affects: string[];
+}
+
 // Evidence-mode aggregate/records shapes (Plan 03).
 // Mirror the backend pydantic models in src/pier/viewer/models.py EXACTLY
 // (snake_case). ConditionAggregate keeps `quality` and cost fields NESTED as
