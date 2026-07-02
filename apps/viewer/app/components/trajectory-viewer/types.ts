@@ -73,12 +73,61 @@ export interface TrajectoryEnrichment {
   steps: StepEnrichment[];
 }
 
-/** Gather-only panel payloads (absent/null for consumer trajectories). */
+/**
+ * Gather-only panel payloads (absent/null for consumer trajectories).
+ * Shapes are byte-exact per Plan 05's gather sidecar emission. Every field
+ * is optional so a partial panel degrades gracefully rather than throwing.
+ */
+
+/** One channel row inside `channel_mix.channels` (keyed by channel name). */
+export interface ChannelMixEntry {
+  calls?: number;
+  tokens?: number;
+  cost_usd?: number;
+  seconds?: number;
+  pct_tokens?: number;
+  pct_cost?: number;
+}
+
+/** `panels.channel_mix` — per-channel spend, keyed by channel name. */
+export interface ChannelMixPanel {
+  channels?: Record<string, ChannelMixEntry>;
+  total_tokens?: number;
+  total_cost_usd?: number;
+  total_seconds?: number;
+}
+
+/** One tier bucket inside `panels.tiers` (keyed by tier name: file/structural/overview). */
+export interface TierEntry {
+  count?: number;
+  tokens?: number;
+  pct_tokens?: number;
+  /** File / symbol paths gathered at this tier. */
+  items?: string[];
+}
+
+/** `panels.tiers` — gathered context grouped by tier, keyed by tier name. */
+export type TiersPanel = Record<string, TierEntry>;
+
+/** `panels.coverage` — mean gold coverage + systematically-missed gold paths. */
+export interface CoveragePanel {
+  mean_coverage?: number;
+  /** `[path, count]` pairs — gold locations missed across runs. */
+  systematic_misses?: Array<[string, number]>;
+}
+
+/** One entry in `panels.off_gold` — context read that was NOT in the gold set. */
+export interface OffGoldEntry {
+  path?: string;
+  injected_tokens?: number;
+  label?: string;
+}
+
 export interface EnrichmentPanels {
-  channel_mix?: unknown;
-  tiers?: unknown;
-  coverage?: unknown;
-  off_gold?: unknown;
+  channel_mix?: ChannelMixPanel | null;
+  tiers?: TiersPanel | null;
+  coverage?: CoveragePanel | null;
+  off_gold?: OffGoldEntry[] | null;
 }
 
 /**

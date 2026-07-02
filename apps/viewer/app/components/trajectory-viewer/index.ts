@@ -8,5 +8,12 @@ export type {
   StepEnrichment,
   TrajectoryEnrichment,
   EnrichmentPanels,
+  ChannelMixPanel,
+  ChannelMixEntry,
+  TiersPanel,
+  TierEntry,
+  CoveragePanel,
+  OffGoldEntry,
   EnrichedTrajectoryEnvelope,
 } from "./types";
+export { GatherPanels } from "./gather-panels";
