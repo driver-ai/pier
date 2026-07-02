@@ -148,6 +148,14 @@ export interface ConditionComparisonProps {
   aggregates: ConditionAggregate[] | undefined;
   /** Plan 02 condition config for labels + rails ordering. */
   conditions: ConditionMeta[] | null | undefined;
+  /**
+   * Optional controlled consumer (exam) mode. When provided (together with
+   * `onExamModeChange`), the selector is driven by the parent so the comparison
+   * and the cost lens stay locked to the SAME consumer mode (DEC-012). When
+   * omitted, the component owns the selection internally (standalone fallback).
+   */
+  examMode?: string | null;
+  onExamModeChange?: (mode: string) => void;
   isLoading?: boolean;
   isFetching?: boolean;
 }
@@ -159,12 +167,23 @@ export interface ConditionComparisonProps {
 export function ConditionComparison({
   aggregates,
   conditions,
+  examMode: controlledExamMode,
+  onExamModeChange,
   isLoading,
   isFetching,
 }: ConditionComparisonProps) {
   const [view, setView] = useState<ChangeView>(DEFAULT_CHANGE_VIEW);
-  const [examMode, setExamMode] = useState<string | null>(null);
+  const [uncontrolledExamMode, setUncontrolledExamMode] = useState<
+    string | null
+  >(null);
   const [hovered, setHovered] = useState<string | null>(null);
+
+  // Controlled when the parent supplies both the value and a change handler,
+  // else the component owns the selection (standalone fallback).
+  const isControlled =
+    controlledExamMode !== undefined && onExamModeChange !== undefined;
+  const examMode = isControlled ? controlledExamMode : uncontrolledExamMode;
+  const setExamMode = isControlled ? onExamModeChange : setUncontrolledExamMode;
 
   const modes = useMemo(
     () => examModes(aggregates ?? []),
