@@ -147,11 +147,11 @@ export function TaskList({
         accessorFn: (row) => row.question ?? "",
         header: "Question",
         cell: ({ row }) => (
-          <span className="text-sm">
+          <div className="max-w-md whitespace-normal break-words text-sm">
             {row.original.question ?? (
               <span className="text-muted-foreground">—</span>
             )}
-          </span>
+          </div>
         ),
         enableSorting: false,
       },
