@@ -343,6 +343,113 @@ def _register_evidence_endpoints(app: FastAPI, run_dir: Path) -> None:
             raise HTTPException(status_code=404, detail="run_records.json not found")
         return [RunRecord.model_validate(r) for r in data["records"]]
 
+    # Sentinel distinguishing "ref is null / producer absent" (-> null body) from
+    # "ref is non-null but its sidecar could not be resolved" (-> distinct error).
+    _ABSENT = object()
+
+    def _resolve_trace_ref(record_id: str, kind: str) -> Any:
+        """Resolve a trial's Plan 05 envelope sidecar BY REF (DEC-014 D2).
+
+        Chain: ``run_records.json[record_id]`` -> the ``{consumer,producer}_
+        trajectory_ref`` -> ``traces/index.json`` (follow ``aliases`` if the ref
+        is an alias key) -> ``refs`` -> sidecar path (relative to ``run_dir``).
+
+        Returns:
+            * ``_ABSENT`` when the ref is null (producer absent for b0/oracle) —
+              the endpoint maps this to a null body.
+            * the parsed envelope dict on success.
+
+        Raises:
+            HTTPException 404 when the ``record_id`` is unknown.
+            HTTPException 500 (distinct from the null case) when a NON-NULL ref
+              cannot be resolved (missing from the index, or its sidecar file is
+              absent/unreadable) — a partial export, NOT "no gather".
+        """
+        records_env = _read_json_file(run_dir / "run_records.json")
+        if not isinstance(records_env, dict) or "records" not in records_env:
+            raise HTTPException(status_code=404, detail="run_records.json not found")
+
+        record = next(
+            (
+                r
+                for r in records_env["records"]
+                if isinstance(r, dict) and r.get("record_id") == record_id
+            ),
+            None,
+        )
+        if record is None:
+            raise HTTPException(
+                status_code=404, detail=f"record_id '{record_id}' not found"
+            )
+
+        ref_key = (
+            "producer_trajectory_ref" if kind == "producer" else "consumer_trajectory_ref"
+        )
+        ref = record.get(ref_key)
+        if ref is None:
+            # Null ref: producer absent for b0/oracle (expected) — not an error.
+            return _ABSENT
+
+        index = _read_json_file(run_dir / "traces" / "index.json")
+        if not isinstance(index, dict):
+            raise HTTPException(
+                status_code=500,
+                detail="traces/index.json missing or malformed; cannot resolve ref",
+            )
+        refs = index.get("refs")
+        aliases = index.get("aliases") or {}
+        if not isinstance(refs, dict):
+            raise HTTPException(
+                status_code=500,
+                detail="traces/index.json has no 'refs'; cannot resolve ref",
+            )
+
+        # Follow a pts->sealed alias (the gather ref is exam-invariant).
+        resolved_ref = aliases.get(ref, ref) if isinstance(aliases, dict) else ref
+
+        rel_path = refs.get(resolved_ref)
+        if rel_path is None:
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    f"trace ref '{ref}' has no sidecar entry in traces/index.json "
+                    "(dangling ref / partial export)"
+                ),
+            )
+
+        envelope = _read_json_file(run_dir / "traces" / rel_path)
+        if envelope is None:
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    f"sidecar for trace ref '{ref}' is missing or unreadable "
+                    f"({rel_path}); partial export"
+                ),
+            )
+        return envelope
+
+    @app.get("/api/evidence/trajectory")
+    def get_enriched_trajectory(
+        record_id: str,
+        kind: str = "consumer",
+    ) -> dict | None:
+        """Return the Plan 05 enriched-trajectory envelope for a trial, by ref.
+
+        Resolves ``record_id`` -> ``{consumer,producer}_trajectory_ref`` ->
+        ``traces/index.json`` -> sidecar (DEC-014 D2/D5). Separate from pier's
+        job/trial ``get_trajectory`` route, which is left untouched.
+
+        Contract (plan 06 "Producer resolution"):
+          * ``kind="producer"`` on a b0/oracle record (null producer ref) -> a
+            null body (200), NOT an error — the producer tab is hidden.
+          * a non-null ref with a missing sidecar -> HTTP 500 (distinct from the
+            null case), so the UI never mistakes a broken export for "no gather".
+        """
+        result = _resolve_trace_ref(record_id, kind)
+        if result is _ABSENT:
+            return None
+        return result
+
 
 def _register_task_endpoints(
     app: FastAPI, tasks_dir: Path, cleanup_callbacks: list

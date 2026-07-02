@@ -1,0 +1,615 @@
+{
+  "records": {
+    "dp": {
+      "record_id": "consumer:frontier-0702:sealed:claude-haiku-4-5-20251001:driver_production:unifyctxm01:DxkGRjd",
+      "run_id": "frontier-0702",
+      "item_id": "unifyctxm01",
+      "condition": "driver_production",
+      "model": "claude-haiku-4-5-20251001",
+      "exam_mode": "sealed",
+      "seed": 0,
+      "score": 1.0,
+      "abstained": false,
+      "exam_type": "mcq",
+      "cost_gather_usd": 0.21935095,
+      "cost_consumer_usd": 0.0389215,
+      "tokens_gather": 519593,
+      "tokens_consumer": 3646,
+      "n_required": 26,
+      "n_covered": 4,
+      "coverage": 0.15384615384615385,
+      "producer_trajectory_ref": "gather:frontier-0702:claude-haiku-4-5-20251001:driver_production:0",
+      "consumer_trajectory_ref": "consumer:frontier-0702:sealed:claude-haiku-4-5-20251001:driver_production:unifyctxm01:DxkGRjd",
+      "forensics": {
+        "exam_type": "mcq",
+        "payload": {
+          "exam_type": "mcq",
+          "question": "How does the chat agent bound the worst-case latency of its tool-calling loop, relative to the Strands context agent?",
+          "options": [
+            {
+              "content": "It caps the loop at 3 iterations and drops the tools on the final pass to force an answer; the context agent has no iteration cap.",
+              "is_gold": true
+            },
+            {
+              "content": "Both share an agent base that caps the iteration count identically.",
+              "distractor_origin": "gotcha"
+            },
+            {
+              "content": "It allows up to 7 tool iterations, while the context agent caps at 3.",
+              "distractor_origin": "trip-up"
+            },
+            {
+              "content": "Not applicable \u2014 the chat agent is single-shot and never loops over tools.",
+              "distractor_origin": "false-premise"
+            },
+            {
+              "content": "Insufficient information to answer from what is provided.",
+              "is_abstention": true
+            }
+          ]
+        },
+        "display": {
+          "question": "How does the chat agent bound the worst-case latency of its tool-calling loop, relative to the Strands context agent?",
+          "answer": "{\"choice\": \"A\", \"rationale\": \"The context explicitly states the chat pipeline runs up to 3 iterations of the agentic loop, while no iteration cap is mentioned for the context agent despite it being described as running Strands Agent with cycles.\", \"confidence\": \"medium\"}",
+          "expected": "It caps the loop at 3 iterations and drops the tools on the final pass to force an answer; the context agent has no iteration cap.",
+          "passed": true
+        }
+      }
+    },
+    "cl": {
+      "record_id": "consumer:frontier-0702:sealed:claude-haiku-4-5-20251001:b0:unifyctxcl01:VqFi9in",
+      "run_id": "frontier-0702",
+      "item_id": "unifyctxcl01",
+      "condition": "b0",
+      "model": "claude-haiku-4-5-20251001",
+      "exam_mode": "sealed",
+      "seed": 1,
+      "score": 0.0,
+      "abstained": true,
+      "exam_type": "cloze",
+      "cost_gather_usd": null,
+      "cost_consumer_usd": null,
+      "tokens_gather": null,
+      "tokens_consumer": null,
+      "n_required": null,
+      "n_covered": null,
+      "coverage": null,
+      "producer_trajectory_ref": null,
+      "consumer_trajectory_ref": "consumer:frontier-0702:sealed:claude-haiku-4-5-20251001:b0:unifyctxcl01:VqFi9in",
+      "forensics": {
+        "exam_type": "cloze",
+        "payload": {
+          "exam_type": "cloze",
+          "question": "In the Driver transpiler (inspector), which OpenAI model generates the file, folder, and top-level documentation and tags (the single-shot per-node comprehension calls, not the deep-context docs)? Give the model id.\n",
+          "gold": "gpt-4o",
+          "accept_set": [
+            "gpt-4o",
+            "`gpt-4o`",
+            "gpt 4o",
+            "openai gpt-4o"
+          ]
+        },
+        "display": {
+          "question": "In the Driver transpiler (inspector), which OpenAI model generates the file, folder, and top-level documentation and tags (the single-shot per-node comprehension calls, not the deep-context docs)? Give the model id.\n",
+          "answer": "I don't have knowledge of the Driver transpiler's implementation or which OpenAI model it uses for documentation generation. Without access to the codebase, I cannot determine this answer.\n\n```json\n{\"answer\": \"Insufficient information\", \"confidence\": \"high\"}\n```",
+          "expected": "gpt-4o",
+          "passed": false
+        }
+      }
+    },
+    "cm": {
+      "record_id": "consumer:frontier-0702:sealed:claude-haiku-4-5-20251001:b0:unifyctxca01:XJZ9swY",
+      "run_id": "frontier-0702",
+      "item_id": "unifyctxca01",
+      "condition": "b0",
+      "model": "claude-haiku-4-5-20251001",
+      "exam_mode": "sealed",
+      "seed": 2,
+      "score": 0.5,
+      "abstained": false,
+      "exam_type": "claim",
+      "cost_gather_usd": null,
+      "cost_consumer_usd": 0.13160685,
+      "tokens_gather": null,
+      "tokens_consumer": 689864,
+      "n_required": null,
+      "n_covered": null,
+      "coverage": null,
+      "producer_trajectory_ref": null,
+      "consumer_trajectory_ref": "consumer:frontier-0702:sealed:claude-haiku-4-5-20251001:b0:unifyctxca01:XJZ9swY",
+      "forensics": {
+        "exam_type": "claim",
+        "payload": {
+          "exam_type": "claim",
+          "question": "Claim: the driver transpiler generates its file, folder, and tag documentation with `gpt-4.1` \u2014 the same model the chat agent uses. Decide whether this claim is true or false; if false, give the correct model.\n",
+          "gold_verdict": false,
+          "correction": "The transpiler generates file/folder/top-level docs and tags with gpt-4o (temperature 0); only the deep-context documents use gpt-4.1 and gpt-5. The chat agent's gpt-4.1 is a different model regime."
+        },
+        "display": {
+          "question": "Claim: the driver transpiler generates its file, folder, and tag documentation with `gpt-4.1` \u2014 the same model the chat agent uses. Decide whether this claim is true or false; if false, give the correct model.\n",
+          "answer": "{\"verdict\": false, \"correction\": \"gpt-4.1 is not a valid OpenAI model; valid GPT-4 models include gpt-4, gpt-4-turbo, and gpt-4o\", \"confidence\": \"high\"}",
+          "expected": "The transpiler generates file/folder/top-level docs and tags with gpt-4o (temperature 0); only the deep-context documents use gpt-4.1 and gpt-5. The chat agent's gpt-4.1 is a different model regime.",
+          "passed": false
+        }
+      }
+    }
+  },
+  "sidecars": {
+    "consumer:dp": {
+      "ref": "consumer:frontier-0702:sealed:claude-haiku-4-5-20251001:driver_production:unifyctxm01:DxkGRjd",
+      "kind": "consumer",
+      "trajectory": {
+        "schema_version": "ATIF-v1.7",
+        "session_id": "1d662b41-c752-458f-afa9-61eb2e5cdf88",
+        "agent": {
+          "name": "claude-code",
+          "version": "2.1.186",
+          "model_name": "claude-haiku-4-5-20251001",
+          "extra": {
+            "cwds": [
+              "/app"
+            ],
+            "git_branches": [
+              "HEAD"
+            ]
+          }
+        },
+        "steps": [
+          {
+            "step_id": 1,
+            "timestamp": "2026-07-01T03:13:09.978Z",
+            "source": "user",
+            "message": "# Question\n\n## Scenario\n\nI want to unify the chat agent and how we build content in the driver transpiler. To do that I need to fully understand the capabilities of both, how they differ, what is avai...[trunc]",
+            "extra": {
+              "_trimmed": true
+            }
+          }
+        ],
+        "final_metrics": {
+          "total_prompt_tokens": 37716,
+          "total_completion_tokens": 3612,
+          "total_cached_tokens": 17050,
+          "total_cost_usd": 0.045593499999999995,
+          "total_steps": 3,
+          "extra": {
+            "service_tiers": [
+              "standard"
+            ],
+            "total_cache_creation_input_tokens": 20650,
+            "total_cache_read_input_tokens": 17050,
+            "peak_context_tokens": 20657,
+            "summarization_count": 0
+          }
+        }
+      },
+      "enrichment": {
+        "steps": [
+          {
+            "index": 0,
+            "input_new": 0,
+            "input_cached": 0,
+            "cache_write": 0,
+            "output": 0,
+            "context_size": 0,
+            "output_attributed": 0,
+            "base_unattributed": 8979,
+            "seconds": 29.54,
+            "model_text_excerpt": "# Question\n\n## Scenario\n\nI want to unify the chat agent and how we build content in the driver transpiler. To do that I need to fully understand the c...[trunc]",
+            "calls": []
+          }
+        ]
+      },
+      "panels": null
+    },
+    "producer:dp": {
+      "ref": "gather:frontier-0702:claude-haiku-4-5-20251001:driver_production:0",
+      "kind": "gather",
+      "trajectory": {
+        "schema_version": "ATIF-v1.7",
+        "session_id": "8606c727-5918-411b-b419-79b5e999e642",
+        "agent": {
+          "name": "claude-code",
+          "version": "2.1.186",
+          "model_name": "claude-haiku-4-5-20251001",
+          "extra": {
+            "cwds": [
+              "/app"
+            ],
+            "git_branches": [
+              "HEAD"
+            ]
+          }
+        },
+        "steps": [
+          {
+            "step_id": 1,
+            "timestamp": "2026-07-01T02:08:27.125Z",
+            "source": "user",
+            "message": "You are a task-specific context specialist using Driver's pre-computed codebase documentation.\n\n## Your Purpose\n\nGiven a specific task, gather and synthesize ALL relevant context from Driver's documen...[trunc]",
+            "extra": {
+              "_trimmed": true
+            }
+          }
+        ],
+        "final_metrics": {
+          "total_prompt_tokens": 660110,
+          "total_completion_tokens": 14051,
+          "total_cached_tokens": 540866,
+          "total_cost_usd": 0.2733736,
+          "total_steps": 14,
+          "extra": {
+            "service_tiers": [
+              "standard"
+            ],
+            "total_cache_creation_input_tokens": 119152,
+            "total_cache_read_input_tokens": 540866,
+            "peak_context_tokens": 96291,
+            "summarization_count": 0
+          }
+        }
+      },
+      "enrichment": {
+        "steps": [
+          {
+            "index": 0,
+            "input_new": 0,
+            "input_cached": 0,
+            "cache_write": 0,
+            "output": 0,
+            "context_size": 0,
+            "output_attributed": 0,
+            "base_unattributed": 19936,
+            "seconds": 5.705,
+            "model_text_excerpt": "You are a task-specific context specialist using Driver's pre-computed codebase documentation.\n\n## Your Purpose\n\nGiven a specific task, gather and syn...[trunc]",
+            "calls": []
+          }
+        ]
+      },
+      "panels": {
+        "channel_mix": {
+          "channels": {
+            "skill": {
+              "calls": 1,
+              "tokens": 24.0,
+              "cost_usd": 0.0,
+              "seconds": 2.228,
+              "pct_tokens": 0.004618990981420109,
+              "pct_cost": 0.0
+            },
+            "mcp_context": {
+              "calls": 15,
+              "tokens": 281575.8710660936,
+              "cost_usd": 0.11249371382870156,
+              "seconds": 33.490815552565245,
+              "pct_tokens": 54.19151704332491,
+              "pct_cost": 51.28480812538153
+            },
+            "read": {
+              "calls": 6,
+              "tokens": 138158.12893390638,
+              "cost_usd": 0.05019473617129844,
+              "seconds": 20.522184447434753,
+              "pct_tokens": 26.58963131481626,
+              "pct_cost": 22.883300104831296
+            },
+            "write_edit": {
+              "calls": 1,
+              "tokens": 99836.0,
+              "cost_usd": 0.0566625,
+              "seconds": 94.227,
+              "pct_tokens": 19.214232650877417,
+              "pct_cost": 25.831891769787184
+            }
+          },
+          "total_tokens": 519594.0,
+          "total_cost_usd": 0.21935095,
+          "total_seconds": 150.468
+        },
+        "tiers": {
+          "file": {
+            "count": 13,
+            "tokens": 272452.65803108807,
+            "pct_tokens": 64.9499400523714,
+            "items": [
+              "backend/content_services/src/context_agent/agent.py",
+              "backend/content_services/src/context_agent/tools.py",
+              "backend/content_services/src/autodocs/src/main.py",
+              "backend/content_services/src/context_agent/prompt.py",
+              "backend/backend/app/api/routes/v2/chat.py",
+              "/logs/agent/sessions/projects/-app/8606c727-5918-411b-b419-79b5e999e642/tool-results/toolu_01V7c3pVo1ZbAYH51t4z8LTE.txt",
+              "backend/packages/shared/shared/v3/app/pipelines/chat.py",
+              "backend/content_services/src/autodocs/src/autodocs_prototype.py",
+              "backend/content_services/src/ticket_analysis/context.py",
+              "backend/content_services/src/autodocs/src/auto_toml.py",
+              "/logs/agent/sessions/projects/-app/8606c727-5918-411b-b419-79b5e999e642/tool-results/mcp-driver-mcp-get_file_documentation-1782871762997.txt"
+            ]
+          },
+          "structural": {
+            "count": 4,
+            "tokens": 109171.34196891192,
+            "pct_tokens": 26.025336539417022,
+            "items": [
+              "backend/content_services/src",
+              "backend/packages/shared/shared/tool_executors",
+              "backend/packages/shared",
+              "backend/content_services/src/autodocs/src"
+            ]
+          },
+          "overview": {
+            "count": 3,
+            "tokens": 37857.0,
+            "pct_tokens": 9.024723408211576,
+            "items": [
+              "get_architecture_overview",
+              "get_llm_onboarding_guide",
+              "get_changelog"
+            ]
+          }
+        },
+        "coverage": {
+          "mean_coverage": 0.15384615384615385,
+          "systematic_misses": [
+            [
+              "backend/content_services/src/inspector/src/hatchet_funcs.py",
+              32
+            ],
+            [
+              "backend/packages/shared/shared/inspector/utils/synthesis/deep_context.py",
+              32
+            ],
+            [
+              "backend/packages/shared/shared/agent/chat_openai.py",
+              32
+            ],
+            [
+              "backend/packages/shared/shared/v3/llms/config/llm_config.toml",
+              32
+            ],
+            [
+              "backend/packages/shared/shared/v3/llms/clients/llm_client_openai_strict.py",
+              32
+            ],
+            [
+              "backend/packages/shared/shared/v3/llms/clients/llm_client.py",
+              32
+            ],
+            [
+              "backend/packages/shared/shared/v3/interfaces/llm_tool.py",
+              32
+            ],
+            [
+              "backend/packages/shared/shared/v3/app/static/tools/hybrid_search.py",
+              32
+            ],
+            [
+              "backend/packages/shared/shared/agent/tools/search_tool.py",
+              32
+            ],
+            [
+              "backend/content_services/src/inspector/src/tasks.py",
+              32
+            ],
+            [
+              "backend/content_services/src/common/model_factory.py",
+              32
+            ],
+            [
+              "backend/content_services/src/workflows/context_agent_workflow.py",
+              32
+            ],
+            [
+              "backend/packages/shared/shared/tool_executors/utilities.py",
+              32
+            ],
+            [
+              "backend/packages/shared/shared/tool_executors/deep_context.py",
+              32
+            ],
+            [
+              "backend/packages/shared/shared/tool_executors/source_file.py",
+              32
+            ],
+            [
+              "backend/packages/shared/shared/v3/app/static/tools/architecture_overview.py",
+              32
+            ],
+            [
+              "backend/backend/app/services/usage_tracking_service.py",
+              32
+            ],
+            [
+              "backend/packages/shared/shared/inspector/metrics.py",
+              32
+            ],
+            [
+              "backend/packages/shared/shared/authorization/principal.py",
+              32
+            ],
+            [
+              "backend/backend/app/mcp/auth_helpers.py",
+              32
+            ],
+            [
+              "machine_or_oauth_auth.py",
+              32
+            ],
+            [
+              "backend/packages/shared/shared/litellm_utils.py",
+              32
+            ]
+          ]
+        },
+        "off_gold": [
+          {
+            "path": "/logs/agent/sessions/projects/-app/8606c727-5918-411b-b419-79b5e999e642/tool-results/toolu_01V7c3pVo1ZbAYH51t4z8LTE.txt",
+            "injected_tokens": 25174,
+            "label": "read but not in gold"
+          },
+          {
+            "path": "backend/content_services/src/autodocs/src/main.py",
+            "injected_tokens": 1682,
+            "label": "read but not in gold"
+          },
+          {
+            "path": "backend/content_services/src/ticket_analysis/context.py",
+            "injected_tokens": 1680,
+            "label": "read but not in gold"
+          },
+          {
+            "path": "backend/content_services/src/context_agent/prompt.py",
+            "injected_tokens": 1050,
+            "label": "read but not in gold"
+          },
+          {
+            "path": "backend/content_services/src/autodocs/src/autodocs_prototype.py",
+            "injected_tokens": 348,
+            "label": "read but not in gold"
+          },
+          {
+            "path": "/logs/agent/sessions/projects/-app/8606c727-5918-411b-b419-79b5e999e642/tool-results/mcp-driver-mcp-get_file_documentation-1782871762997.txt",
+            "injected_tokens": 46,
+            "label": "read but not in gold"
+          },
+          {
+            "path": "backend/content_services/src/autodocs/src/auto_toml.py",
+            "injected_tokens": 29,
+            "label": "read but not in gold"
+          }
+        ]
+      }
+    },
+    "consumer:cl": {
+      "ref": "consumer:frontier-0702:sealed:claude-haiku-4-5-20251001:b0:unifyctxcl01:VqFi9in",
+      "kind": "consumer",
+      "trajectory": {
+        "schema_version": "ATIF-v1.7",
+        "session_id": "decff0c3-b1c2-48c4-b13a-7aab76655d32",
+        "agent": {
+          "name": "claude-code",
+          "version": "2.1.186",
+          "model_name": "claude-haiku-4-5-20251001",
+          "extra": {
+            "cwds": [
+              "/app"
+            ],
+            "git_branches": [
+              "HEAD"
+            ]
+          }
+        },
+        "steps": [
+          {
+            "step_id": 1,
+            "timestamp": "2026-07-01T02:43:16.294Z",
+            "source": "user",
+            "message": "# Question\n\n## Scenario\n\nIn the Driver transpiler (inspector), which OpenAI model generates the file, folder, and top-level documentation and tags (the single-shot per-node comprehension calls, not th...[trunc]",
+            "extra": {
+              "_trimmed": true
+            }
+          }
+        ],
+        "final_metrics": {
+          "total_prompt_tokens": 7826,
+          "total_completion_tokens": 382,
+          "total_cached_tokens": 7817,
+          "total_cost_usd": 0.0027007,
+          "total_steps": 2,
+          "extra": {
+            "service_tiers": [
+              "standard"
+            ],
+            "total_cache_creation_input_tokens": 0,
+            "total_cache_read_input_tokens": 7817,
+            "peak_context_tokens": 7826,
+            "summarization_count": 0
+          }
+        }
+      },
+      "enrichment": {
+        "steps": [
+          {
+            "index": 0,
+            "input_new": 0,
+            "input_cached": 0,
+            "cache_write": 0,
+            "output": 0,
+            "context_size": 0,
+            "output_attributed": 0,
+            "base_unattributed": 0,
+            "seconds": 3.449,
+            "model_text_excerpt": "# Question\n\n## Scenario\n\nIn the Driver transpiler (inspector), which OpenAI model generates the file, folder, and top-level documentation and tags (th...[trunc]",
+            "calls": []
+          }
+        ]
+      },
+      "panels": null
+    },
+    "consumer:cm": {
+      "ref": "consumer:frontier-0702:sealed:claude-haiku-4-5-20251001:b0:unifyctxca01:XJZ9swY",
+      "kind": "consumer",
+      "trajectory": {
+        "schema_version": "ATIF-v1.7",
+        "session_id": "59cfc84a-a681-4ceb-95b6-65f7fd79c5ec",
+        "agent": {
+          "name": "claude-code",
+          "version": "2.1.186",
+          "model_name": "claude-haiku-4-5-20251001",
+          "extra": {
+            "cwds": [
+              "/app"
+            ],
+            "git_branches": [
+              "HEAD"
+            ]
+          }
+        },
+        "steps": [
+          {
+            "step_id": 1,
+            "timestamp": "2026-07-01T02:39:32.188Z",
+            "source": "user",
+            "message": "# Question\n\n## Scenario\n\nClaim: the driver transpiler generates its file, folder, and tag documentation with `gpt-4.1` \u2014 the same model the chat agent uses. Decide whether this claim is true or false;...[trunc]",
+            "extra": {
+              "_trimmed": true
+            }
+          }
+        ],
+        "final_metrics": {
+          "total_prompt_tokens": 719869,
+          "total_completion_tokens": 8019,
+          "total_cached_tokens": 699888,
+          "total_cost_usd": 0.13496505,
+          "total_steps": 55,
+          "extra": {
+            "service_tiers": [
+              "standard"
+            ],
+            "total_cache_creation_input_tokens": 19601,
+            "total_cache_read_input_tokens": 699888,
+            "peak_context_tokens": 19608,
+            "summarization_count": 0
+          }
+        }
+      },
+      "enrichment": {
+        "steps": [
+          {
+            "index": 0,
+            "input_new": 0,
+            "input_cached": 0,
+            "cache_write": 0,
+            "output": 0,
+            "context_size": 0,
+            "output_attributed": 0,
+            "base_unattributed": 7628,
+            "seconds": 1.591,
+            "model_text_excerpt": "# Question\n\n## Scenario\n\nClaim: the driver transpiler generates its file, folder, and tag documentation with `gpt-4.1` \u2014 the same model the chat agent...[trunc]",
+            "calls": []
+          }
+        ]
+      },
+      "panels": null
+    }
+  },
+  "run_id": "frontier-0702"
+}
