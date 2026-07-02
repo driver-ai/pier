@@ -1,4 +1,4 @@
-import { type RouteConfig, index, route } from "@react-router/dev/routes";
+import { type RouteConfig, index, layout, route } from "@react-router/dev/routes";
 
 export default [
   index("routes/home.tsx"),
@@ -17,10 +17,12 @@ export default [
     "jobs/:jobName/tasks/:source/:agent/:modelProvider/:modelName/:taskName/trials/:trialName",
     "routes/trial.tsx"
   ),
-  route("method", "routes/method.tsx"),
-  route("evidence", "routes/evidence.tsx"),
-  route("tasks", "routes/tasks.tsx"),
-  route("trace", "routes/trace.tsx"),
+  layout("routes/evidence-layout.tsx", [
+    route("evidence", "routes/evidence.tsx"),
+    route("method", "routes/method.tsx"),
+    route("tasks", "routes/tasks.tsx"),
+    route("trace", "routes/trace.tsx"),
+  ]),
   route("task-definitions", "routes/task-definitions.tsx"),
   route("task-definitions/:taskName", "routes/task-definition.tsx"),
   route("prototypes/chart-toolbar", "routes/chart-toolbar-prototypes.tsx"),

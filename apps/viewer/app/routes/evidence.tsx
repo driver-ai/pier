@@ -25,12 +25,6 @@ import { ConditionComparison } from "~/components/condition-comparison";
 import { CostLens } from "~/components/cost-lens";
 import { DataNotesSurface } from "~/components/data-quality";
 import {
-  Breadcrumb,
-  BreadcrumbItem,
-  BreadcrumbList,
-  BreadcrumbPage,
-} from "~/components/ui/breadcrumb";
-import {
   Empty,
   EmptyDescription,
   EmptyHeader,
@@ -77,15 +71,8 @@ export default function Evidence() {
   const hasAggregates = !!aggregates && aggregates.length > 0;
 
   return (
-    <div className="px-4 py-10">
+    <div>
       <div className="mb-8">
-        <Breadcrumb className="mb-4">
-          <BreadcrumbList>
-            <BreadcrumbItem>
-              <BreadcrumbPage>Evidence</BreadcrumbPage>
-            </BreadcrumbItem>
-          </BreadcrumbList>
-        </Breadcrumb>
         <h1 className="text-4xl font-normal tracking-tighter font-mono">
           Evidence
         </h1>

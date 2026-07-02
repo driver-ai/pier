@@ -7,12 +7,6 @@
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 
-import {
-  Breadcrumb,
-  BreadcrumbItem,
-  BreadcrumbList,
-  BreadcrumbPage,
-} from "~/components/ui/breadcrumb";
 import { ConditionLabel } from "~/components/condition-label";
 import { useConditions } from "~/lib/conditions";
 import { fetchConditionAggregates } from "~/lib/api";
@@ -107,15 +101,8 @@ export default function Method() {
   );
 
   return (
-    <div className="px-4 py-10 max-w-5xl">
+    <div className="max-w-5xl">
       <div className="mb-8">
-        <Breadcrumb className="mb-4">
-          <BreadcrumbList>
-            <BreadcrumbItem>
-              <BreadcrumbPage>Method</BreadcrumbPage>
-            </BreadcrumbItem>
-          </BreadcrumbList>
-        </Breadcrumb>
         <h1 className="text-4xl font-normal tracking-tighter font-mono">
           Method
         </h1>

@@ -92,7 +92,7 @@ export default function Tasks() {
   const hasRows = rows.length > 0;
 
   return (
-    <div className="px-4 py-10">
+    <div>
       <div className="mb-8">
         <Breadcrumb className="mb-4">
           <BreadcrumbList>
