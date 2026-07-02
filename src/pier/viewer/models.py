@@ -225,6 +225,91 @@ class ConditionMeta(BaseModel):
     order: int
 
 
+class Stat(BaseModel):
+    """A summary statistic block, mirroring pier-analytics ``summary.Stat``."""
+
+    mean: float
+    median: float
+    std: float
+    n: int
+    min: float
+    max: float
+
+
+class ConditionAggregate(BaseModel):
+    """Per (condition, model, exam_mode) quality/cost rollup.
+
+    Mirrors pier-analytics ``emit.ConditionAggregate`` (DEC-014 D4): ``quality``
+    and the three cost fields stay NESTED as ``Stat``s (or null); pier renders
+    the precomputed aggregate and never re-rolls up.
+    """
+
+    condition: str
+    model: str
+    exam_mode: str
+    quality: Stat | None = None
+    ci_low: float | None = None
+    ci_high: float | None = None
+    lift_vs_b0: float | None = None
+    span_pos: float | None = None
+    cost_gather: Stat | None = None
+    cost_consumer: Stat | None = None
+    cost_total: Stat | None = None
+    abstain_rate: float
+    n: int
+
+
+class ForensicsDisplay(BaseModel):
+    """Normalized grader summary, mirroring emit ``ForensicsDisplay``."""
+
+    question: str
+    answer: str | None = None
+    expected: str | None = None
+    passed: bool | None = None
+
+
+class Forensics(BaseModel):
+    """Discriminated grader-forensics union, mirroring emit ``Forensics``.
+
+    ``payload`` is typed per ``exam_type`` upstream; the viewer keeps it as a
+    permissive dict rather than modelling each exam-type shape.
+    """
+
+    exam_type: str
+    payload: dict[str, Any] = {}
+    display: ForensicsDisplay
+
+
+class RunRecord(BaseModel):
+    """One per-trial join row keyed by the DEC-014 D2 ``record_id``.
+
+    Mirrors pier-analytics ``emit.RunRecord``: carries ``record_id`` and nested
+    ``forensics`` (or null). Consumed by the task drill (Plan 04) and grader
+    forensics (Plan 06), NOT for cost roll-up.
+    """
+
+    record_id: str
+    run_id: str
+    item_id: str
+    condition: str
+    model: str
+    exam_mode: str
+    seed: int | None = None
+    score: float | None = None
+    abstained: bool
+    exam_type: str | None = None
+    cost_gather_usd: float | None = None
+    cost_consumer_usd: float | None = None
+    tokens_gather: int | None = None
+    tokens_consumer: int | None = None
+    n_required: int | None = None
+    n_covered: int | None = None
+    coverage: float | None = None
+    producer_trajectory_ref: str | None = None
+    consumer_trajectory_ref: str
+    forensics: Forensics | None = None
+
+
 class ModelPricing(BaseModel):
     """Per-token pricing rates for a model, sourced from LiteLLM."""
 

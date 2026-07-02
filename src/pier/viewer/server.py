@@ -24,6 +24,7 @@ from pier.models.job.config import (
 from pier.models.job.result import JobStats
 from pier.models.trial.result import TrialResult
 from pier.viewer.models import (
+    ConditionAggregate,
     ConditionMeta,
     CritiqueHeatmapCell,
     CritiqueHeatmapColumn,
@@ -49,6 +50,7 @@ from pier.viewer.models import (
     TaskDefinitionFilters,
     TaskDefinitionSummary,
     TaskFilters,
+    RunRecord,
     TaskSummary,
     TrialCritiqueDetail,
     TrialSummary,
@@ -305,6 +307,40 @@ def _register_evidence_endpoints(app: FastAPI, run_dir: Path) -> None:
         if data is None:
             raise HTTPException(status_code=404, detail="conditions.json not found")
         return [ConditionMeta.model_validate(c) for c in data]
+
+    @app.get(
+        "/api/condition-aggregates", response_model=list[ConditionAggregate]
+    )
+    def get_condition_aggregates() -> list[ConditionAggregate]:
+        """Return the run's precomputed per-condition aggregates.
+
+        Passthrough of the ``condition_aggregates.json`` sidecar's inner
+        ``aggregates`` list (the ``{run_id, aggregates}`` envelope; DEC-014 D4) —
+        pier renders the precomputed rollup and never re-aggregates. An absent /
+        malformed sidecar, or one lacking the inner key, surfaces as 404 (never
+        500), mirroring ``get_conditions``.
+        """
+        data = _read_json_file(run_dir / "condition_aggregates.json")
+        if not isinstance(data, dict) or "aggregates" not in data:
+            raise HTTPException(
+                status_code=404, detail="condition_aggregates.json not found"
+            )
+        return [ConditionAggregate.model_validate(a) for a in data["aggregates"]]
+
+    @app.get("/api/run-records", response_model=list[RunRecord])
+    def get_run_records() -> list[RunRecord]:
+        """Return the run's per-trial join records.
+
+        Passthrough of the ``run_records.json`` sidecar's inner ``records`` list
+        (the ``{run_id, records}`` envelope; DEC-014 D2). Each record carries its
+        ``record_id`` for the task drill (Plan 04) + grader forensics (Plan 06),
+        NOT for cost roll-up. An absent / malformed sidecar, or one lacking the
+        inner key, surfaces as 404 (never 500), mirroring ``get_conditions``.
+        """
+        data = _read_json_file(run_dir / "run_records.json")
+        if not isinstance(data, dict) or "records" not in data:
+            raise HTTPException(status_code=404, detail="run_records.json not found")
+        return [RunRecord.model_validate(r) for r in data["records"]]
 
 
 def _register_task_endpoints(
